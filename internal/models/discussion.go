@@ -107,3 +107,15 @@ type PostLike struct {
 }
 
 func (PostLike) TableName() string { return "flarum_post_likes" }
+
+// DiscussionUser 记录用户在讨论中的已读状态与进度（兼容 Flarum 原生 flarum_discussion_user 表）。
+type DiscussionUser struct {
+	UserID             uint       `gorm:"column:user_id;primaryKey"`
+	DiscussionID       uint       `gorm:"column:discussion_id;primaryKey"`
+	LastReadAt         *time.Time `gorm:"column:last_read_at"`
+	LastReadPostNumber *int       `gorm:"column:last_read_post_number;type:int unsigned"`
+	Subscription       *string    `gorm:"column:subscription;type:varchar(50)"`
+}
+
+func (DiscussionUser) TableName() string { return "flarum_discussion_user" }
+

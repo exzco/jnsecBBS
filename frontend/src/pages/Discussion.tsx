@@ -38,8 +38,9 @@ export function InlineDiscussion({ id, onBack }: { id: number; onBack: () => voi
 
 function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSlug?: string; syncUrl?: boolean }) {
   const [params, setParams] = useSearchParams()
-  const requestedPage = Number(params.get("page") ?? 1)
-  const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1
+  const hasPage = params.has("page")
+  const requestedPage = hasPage ? Number(params.get("page")) : null
+  const page = requestedPage && Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 0
   const goPage = (p: number) => {
     setParams((current) => {
       const next = new URLSearchParams(current)
@@ -47,15 +48,31 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
       next.delete("edit")
       return next
     })
+    window.scrollTo({ top: 0, behavior: "smooth" })
   }
   const navigate = useNavigate()
   const qc = useQueryClient()
 
   const { data, isError, error } = useQuery({
     queryKey: ["discussion", id, page],
-    queryFn: () => api<DiscussionDetail>(`/api/discussions/${id}?page=${page}`),
+    queryFn: () => api<DiscussionDetail>(`/api/discussions/${id}${page > 0 ? `?page=${page}` : ""}`),
     retry: false,
   })
+
+  // 首次打开帖子（未指定 page）且包含多页内容/周报时，平滑定位至最新内容
+  useEffect(() => {
+    if (data && !hasPage) {
+      const isWeekly = data.discussion.tags.some((t) => t.name.includes("周报") || t.slug === "weekly")
+      if (isWeekly || data.page.page > 1) {
+        const last = data.posts[data.posts.length - 1]
+        if (last) {
+          setTimeout(() => {
+            document.getElementById(`post-${last.id}`)?.scrollIntoView({ behavior: "smooth" })
+          }, 150)
+        }
+      }
+    }
+  }, [data, hasPage])
 
   // 旧链接 /d/{id} 规范化为 /d/{id}-{slug}（仅整页路由）
   useEffect(() => {

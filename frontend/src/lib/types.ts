@@ -47,6 +47,7 @@ export interface DiscussionSummary {
   isSticky: boolean
   isLocked: boolean
   isHidden: boolean
+  hasUnread?: boolean
 }
 
 export interface Post {

@@ -299,6 +299,37 @@ type DiscussionSummaryDTO struct {
 	IsSticky     bool      `json:"isSticky"`
 	IsLocked     bool      `json:"isLocked"`
 	IsHidden     bool      `json:"isHidden"`
+	HasUnread    bool      `json:"hasUnread"`
+}
+
+func (s *Server) loadReadMap(discIDs []uint, u *models.User) map[uint]int {
+	if u == nil || len(discIDs) == 0 {
+		return nil
+	}
+	var rows []models.DiscussionUser
+	s.db.Where("user_id = ? AND discussion_id IN ?", u.ID, discIDs).Find(&rows)
+	m := make(map[uint]int, len(rows))
+	for _, r := range rows {
+		if r.LastReadPostNumber != nil {
+			m[r.DiscussionID] = *r.LastReadPostNumber
+		}
+	}
+	return m
+}
+
+func (s *Server) discussionSummaryWithRead(d *models.Discussion, u *models.User, readMap map[uint]int) DiscussionSummaryDTO {
+	dto := s.discussionSummaryDTO(d, u)
+	if u != nil && readMap != nil {
+		lastPostNum := d.CommentCount
+		if d.LastPostNumber != nil && *d.LastPostNumber > 0 {
+			lastPostNum = *d.LastPostNumber
+		}
+		lastRead, hasRead := readMap[d.ID]
+		if !hasRead || lastRead < lastPostNum {
+			dto.HasUnread = true
+		}
+	}
+	return dto
 }
 
 func (s *Server) discussionSummaryDTO(d *models.Discussion, u *models.User) DiscussionSummaryDTO {

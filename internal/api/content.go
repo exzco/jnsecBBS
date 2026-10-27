@@ -102,9 +102,15 @@ func (s *Server) recent(c *gin.Context) {
 		Order("flarum_discussions.is_sticky DESC, flarum_discussions.last_posted_at DESC").
 		Limit(perPageDiscussions).Offset((page - 1) * perPageDiscussions).Find(&discs)
 
+	discIDs := make([]uint, 0, len(discs))
+	for i := range discs {
+		discIDs = append(discIDs, discs[i].ID)
+	}
+	readMap := s.loadReadMap(discIDs, u)
+
 	items := make([]DiscussionSummaryDTO, 0, len(discs))
 	for i := range discs {
-		items = append(items, s.discussionSummaryDTO(&discs[i], u))
+		items = append(items, s.discussionSummaryWithRead(&discs[i], u, readMap))
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "page": PageDTO{Page: page, Pages: pages, Total: int(total)}})
 }
@@ -291,9 +297,15 @@ func (s *Server) tagDiscussions(c *gin.Context) {
 		Order("flarum_discussions.is_sticky DESC, flarum_discussions.last_posted_at DESC").
 		Limit(perPageDiscussions).Offset((page - 1) * perPageDiscussions).Find(&discs)
 
+	discIDs := make([]uint, 0, len(discs))
+	for i := range discs {
+		discIDs = append(discIDs, discs[i].ID)
+	}
+	readMap := s.loadReadMap(discIDs, u)
+
 	items := make([]DiscussionSummaryDTO, 0, len(discs))
 	for i := range discs {
-		items = append(items, s.discussionSummaryDTO(&discs[i], u))
+		items = append(items, s.discussionSummaryWithRead(&discs[i], u, readMap))
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "page": PageDTO{Page: page, Pages: pages, Total: int(total)}})
 }
@@ -380,12 +392,77 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	if !ok {
 		return
 	}
+	var du models.DiscussionUser
+	hasRead := false
+	if u != nil {
+		if err := s.db.Where("user_id = ? AND discussion_id = ?", u.ID, d.ID).First(&du).Error; err == nil {
+			hasRead = true
+		}
+	}
+	isWeekly := false
+	for _, t := range d.Tags {
+		if strings.Contains(t.Name, "周报") || t.Slug == "weekly" {
+			isWeekly = true
+			break
+		}
+	}
+
 	page := pageParam(c)
 	pages := paginate(d.CommentCount, page, perPagePosts)
+
+	// 未传 page 参数（默认直接点开帖子）：定位到未读回复页或周报末页，避免从最旧楼层往下翻
+	if c.Query("page") == "" {
+		if hasRead && du.LastReadPostNumber != nil && *du.LastReadPostNumber > 0 {
+			lastRead := *du.LastReadPostNumber
+			lastPostNum := d.CommentCount
+			if d.LastPostNumber != nil && *d.LastPostNumber > 0 {
+				lastPostNum = *d.LastPostNumber
+			}
+			if lastRead < lastPostNum {
+				var countBefore int64
+				s.db.Model(&models.Post{}).
+					Where("discussion_id = ? AND type = 'comment' AND is_approved = 1 AND is_private = 0 AND number <= ?", d.ID, lastRead).
+					Count(&countBefore)
+				page = int(countBefore/perPagePosts) + 1
+			} else if isWeekly && pages > 1 {
+				page = pages
+			}
+		} else if isWeekly && pages > 1 {
+			page = pages
+		}
+	}
 
 	var posts []models.Post
 	s.db.Where("discussion_id = ? AND type = ? AND is_approved = ? AND is_private = ?", d.ID, "comment", true, false).Order("number ASC").
 		Limit(perPagePosts).Offset((page - 1) * perPagePosts).Preload("User").Find(&posts)
+
+	// 记录已读进度
+	if u != nil && len(posts) > 0 {
+		maxNumber := 0
+		for _, p := range posts {
+			if p.Number != nil && *p.Number > maxNumber {
+				maxNumber = *p.Number
+			}
+		}
+		if maxNumber > 0 {
+			now := time.Now()
+			if hasRead {
+				if du.LastReadPostNumber == nil || maxNumber > *du.LastReadPostNumber {
+					du.LastReadPostNumber = &maxNumber
+				}
+				du.LastReadAt = &now
+				s.db.Save(&du)
+			} else {
+				du = models.DiscussionUser{
+					UserID:             u.ID,
+					DiscussionID:       d.ID,
+					LastReadAt:         &now,
+					LastReadPostNumber: &maxNumber,
+				}
+				s.db.Save(&du)
+			}
+		}
+	}
 
 	liked := s.loadLikes(posts, u)
 
@@ -594,6 +671,20 @@ func (s *Server) reply(c *gin.Context) {
 		if err := tx.Model(&models.User{}).Where("id = ?", u.ID).
 			UpdateColumn("comment_count", gorm.Expr("comment_count + 1")).Error; err != nil {
 			return err
+		}
+		var du models.DiscussionUser
+		if err := tx.Where("user_id = ? AND discussion_id = ?", u.ID, d.ID).First(&du).Error; err == nil {
+			du.LastReadPostNumber = &nextNumber
+			du.LastReadAt = &now
+			_ = tx.Save(&du).Error
+		} else {
+			du = models.DiscussionUser{
+				UserID:             u.ID,
+				DiscussionID:       d.ID,
+				LastReadAt:         &now,
+				LastReadPostNumber: &nextNumber,
+			}
+			_ = tx.Save(&du).Error
 		}
 		// 同步版块冗余计数
 		for _, t := range d.Tags {

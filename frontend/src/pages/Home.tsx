@@ -215,7 +215,10 @@ export default function HomePage() {
                         }}
                         className="group block rounded-md px-2 py-2 hover:bg-muted"
                       >
-                        <p className="truncate text-sm group-hover:text-primary">{d.title}</p>
+                        <p className="truncate text-sm group-hover:text-primary flex items-center gap-1.5">
+                          {d.hasUnread && <span className="size-1.5 rounded-full bg-primary shrink-0" title="未读更新" />}
+                          <span className="truncate">{d.title}</span>
+                        </p>
                         <p className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                           <span>{d.author?.username}</span>
                           <span>· {timeAgo(d.lastPostedAt)}</span>

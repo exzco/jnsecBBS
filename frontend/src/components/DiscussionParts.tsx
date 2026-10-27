@@ -77,6 +77,9 @@ export function DiscussionRowCompact({
       </Link>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
+          {d.hasUnread && (
+            <span className="size-2 rounded-full bg-primary shrink-0" title="有未读更新" />
+          )}
           {d.isSticky && (
             <span className="shrink-0 rounded bg-orange-500/10 px-1 py-px text-[10px] font-semibold text-orange-600 dark:text-orange-400">
               置顶
@@ -121,6 +124,9 @@ export function DiscussionRow({ d }: { d: DiscussionSummary }) {
       </Link>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 flex-wrap">
+          {d.hasUnread && (
+            <span className="size-2 rounded-full bg-primary shrink-0" title="有未读更新" />
+          )}
           {d.isSticky && (
             <span className="inline-flex items-center gap-0.5 rounded bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-orange-600 dark:text-orange-400">
               置顶
