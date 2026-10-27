@@ -12,14 +12,14 @@
 - **打包集成**：标准库 `embed.FS`，前端构建产物直接内嵌于单一 Go 二进制可执行文件。
 
 ### 前端系统 (Frontend)
-- **开发与构建**：React 19、TypeScript、Vite 6、Node 
+- **开发与构建**：React 19、TypeScript、Vite 8；本地与 CI 支持 Bun，生产镜像使用 Node/npm
 - **样式与组件**：Tailwind CSS v4、Radix UI Primitives、Lucide React 图标库、Geist Variable 字体
 - **状态与缓存**：TanStack React Query v5（服务端状态与缓存）、NanoStores（轻量原子前端状态）
 
 ### 运维与基础设施 (Infra & DevOps)
 - **容器与网关**：Docker、Docker Compose、Nginx（宿主机反代与子域名分流）
 - **CDN 与证书**：Cloudflare CDN（边缘 HTTPS 卸载与安全防护）
-- **定时同步**：Python 3 同步脚本 (`scripts/sync-flarum.py`) + Linux Systemd Timer
+- **迁移期同步工具**：Python 3 同步脚本 (`scripts/sync-flarum.py`) + Linux Systemd Timer；当前生产共享数据库，定时任务已停用
 
 ---
 
@@ -41,7 +41,7 @@ jnsecBBS/
 ├── frontend/              # React 19 SPA 前端工程 (源码、组件、状态与页面)
 ├── deploy/                # 部署配置 (Nginx 配置模板、Systemd 单元、SQL 迁移脚本)
 ├── scripts/               # 核心同步工具 (sync-flarum.py 及其实际环境自动化测试)
-├── Dockerfile             # 多阶段构建文件 (Bun 构建前端 -> Go 编译静态二进制 -> Alpine 运行)
+├── Dockerfile             # 多阶段构建文件 (Node/npm 构建前端 -> Go 编译静态二进制 -> Alpine 运行)
 └── docker-compose.yaml    # 生产容器编排文件
 ```
 
@@ -102,12 +102,14 @@ flowchart LR
    - 其他常规提交（如 `docs:`, `fix:`, `refactor:` 等）仅执行 CI 检查，自动跳过 CD 部署。
 4. **VPS 落地触发**：
    - 经 SSH 连接后进入 `/opt/backup/refactorBBS/jnsecBBS`，触发 `run.sh` 执行 `git pull --ff-only`、配置自动同步、镜像构建与 `docker-compose up -d --no-deps app` 容器平滑切换。
+   - 正式部署用户 `gha_deploy` 的 SSH 密钥仅允许执行现有 `run.sh`。生产变量由服务器 PAM 在 SSH 登录时加载，优先于脚本重新生成的 `.env`；项目目录不再使用 `docker-compose.override.yml`。
+   - 正式 Nginx 配置独立保存，部署用户仅获得脚本现有 Nginx 操作所需的有限免密 sudo。配置位置、原因和验收方式见 [生产部署维护](docs/production-deployment.md)。
 
 ---
 
 ## 4. 部署后架构与运行时拓扑 (Deployed Architecture)
 
-当前线上采用**“子域名分流、旧站可写、新站只读、周期增量镜像”**的高可用灰度过渡架构：
+2026-10-27 已切换为**新站对外读写、Go 与旧站共享 `flarum` 数据库**。旧站和 MySQL 保持运行，旧站公网入口关闭；`bbs`、`bbs_v2` 保留为停用副本，两个同步任务均已停止。
 
 ```mermaid
 flowchart TD
@@ -115,19 +117,15 @@ flowchart TD
     
     Cloudflare -->|HTTP:80 透传| Nginx[VPS 宿主机 Nginx 网关]
     
-    subgraph DomainRouting [子域名路由]
-        Nginx -->|bbs.jnsec.org| PHPApp[旧站容器 bbs-php<br/>端口: 8081 / 可读写]
-        Nginx -->|new.bbs.jnsec.org| GoApp[新站容器 bbs-app<br/>端口: 8080 / 只读镜像]
+    subgraph DomainRouting [生产入口]
+        Nginx -->|bbs.jnsec.org| GoApp[新站容器 bbs-app<br/>127.0.0.1:8080 / 可读写]
+        Operator[服务器本机维护] -->|127.0.0.1:8081| PHPApp[旧站容器 bbs-php<br/>保持运行 / 公网端口已阻断]
     end
     
-    subgraph DataStorage [数据存储与同步]
-        MySQL[(MySQL 5.7 实例<br/>容器: bbs-mysql)]
-        PHPApp -->|读写| DB_Flarum[(数据库: flarum)]
-        GoApp -->|只读查询| DB_BBS[(数据库: bbs)]
-        
-        Timer[Systemd Timer: jnsec-bbs-sync] -->|每 5 分钟| SyncPy[sync-flarum.py 镜像脚本]
-        SyncPy -.->|mysqldump 快照管道| DB_Flarum
-        SyncPy -.->|安全回放增量数据| DB_BBS
+    subgraph DataStorage [MySQL 5.7 / bbs-mysql]
+        PHPApp -->|保留连接| DB_Flarum[(共享运行库: flarum)]
+        GoApp -->|读写| DB_Flarum
+        Inactive[(停用副本: bbs / bbs_v2)]
     end
 
     subgraph Volumes [共享持久化卷]
@@ -138,12 +136,13 @@ flowchart TD
 ```
 
 ### 运行特征说明
-1. **流量与分流**：
-   - `bbs.jnsec.org`：指向原 PHP Flarum 容器（端口 8081），作为目前唯一允许写入的生产源站。
-   - `new.bbs.jnsec.org`：指向新 Go 论坛容器（端口 8080），以 `JNSEC_READ_ONLY=true` 启动，面向公网提供只读体验用于测试。
-2. **数据同步保证**：
-   - `jnsec-bbs-sync.timer` 每 5 分钟拉起 `sync-flarum.py`，直接在 `bbs-mysql` 容器内完成 `flarum` → `bbs` 库的一致性快照同步。
-   - 脚本采用黑名单/白名单保留机制，跨同步保留 `flarum_access_tokens`，保证用户在新站登录会话不掉线。
+1. **正式流量**：
+   - `bbs.jnsec.org` 指向 Go 论坛，`JNSEC_READ_ONLY=false`，使用专用账号对 `flarum` 执行查询及业务写入。
+   - 旧站保留本机维护入口；`jnsec-legacy-private.service` 在 Docker 转发链阻断外部访问 8081，规则随开机加载。
+   - Nginx 同时接受 `new.bbs.jnsec.org`，但切换验收时该域名未能解析，正式入口以 `bbs.jnsec.org` 为准。
+2. **数据与同步状态**：
+   - Go 使用原 Flarum 表及显式迁移建立的 Go 辅助表；`bbs_v2` 的原生结构尚未接入在线 API。
+   - `jnsec-bbs-sync.timer`、`jnsec-bbs-native-sync.timer` 均已禁用，对应服务已停止。共享模式无需同步，也不删除停用副本。
 3. **资源无缝共享**：
    - 共享 Docker 卷 `wwwdata`：PHP 容器挂载写入，Go 容器只读挂载至 `/flarum:ro`，旧头像与附件直接由 Go 容器的 `/assets` 路由透出，免除额外磁盘同步开销。
 
@@ -165,28 +164,29 @@ export JNSEC_SESSION_SECRET="$(openssl rand -hex 32)"
 ```
 
 应用启动仅校验数据库，不自动建表。已有兼容库由管理员显式执行
-`./bbs migrate-db -c config-test.yaml`，升级 Go 辅助表与迁移版本记录；不要对旧站源库
-运行该命令。只读镜像同步会保留 `bbs_user_profiles`、`bbs_schema_migrations` 等已批准
+`./bbs migrate-db -c config-test.yaml`，升级 Go 辅助表与迁移版本记录。仅对选定的 Go
+运行库执行迁移；共享库先备份并由管理员迁移，应用账号无需 DDL 权限。只读镜像同步会保留 `bbs_user_profiles`、`bbs_schema_migrations` 等已批准
 本地表，继续拒绝未知表及结构漂移。
 
 `bbs native-import` 可将旧站快照转换到隔离的 `bbs_v2` 影子库，保留原始数据归档。
 在线 API 尚未适配该结构，不可直接修改应用 DSN。详见
 [独立数据库迁移](docs/native-migration.md) 和 [当前进度](PLAN.md)。
 
-本轮修复回复原位编辑、分类返回列表及分页跳转（#5–#7），保持现有三栏样式。
-验收使用本机合成数据，覆盖普通成员、取消/失败重试、首页/末页/指定页和移动分类。
-部署文件与目录沿用目标分支现状：`run.sh`、`Dockerfile`、`docker-compose.yaml`、
-`config.example.yaml`、`deploy/`、`.github/` 不在本 PR 的修改范围。
+已修复回复原位编辑、分类返回列表及分页跳转（#5–#7），保持现有三栏样式。
+PR #9 修复历史楼层缺口及并发回帖导致的重复楼层错误，使用 MySQL 5.7 完成并发回归，
+并随生产部署验收通过。当前服务器配置及验收记录见 [生产部署维护](docs/production-deployment.md)。
 
 ### 生产同步任务维护
 ```bash
-# 查看同步定时器状态
-sudo systemctl status jnsec-bbs-sync.timer
+# 共享库模式下两个定时器应为 disabled，对应服务应为 inactive
+sudo systemctl is-enabled jnsec-bbs-sync.timer jnsec-bbs-native-sync.timer
+sudo systemctl is-active jnsec-bbs-sync.service jnsec-bbs-native-sync.service
 # 查看最近 20 条同步执行日志
 sudo journalctl -u jnsec-bbs-sync.service -n 20 --no-pager
-# 手动立即触发一次增量同步
-sudo systemctl start jnsec-bbs-sync.service
 ```
+
+`is-enabled` / `is-active` 对禁用或停止状态返回非零退出码，这是上述检查的预期结果。
+重新引入镜像同步或切换运行库前，需单独制定数据切换方案。
 
 ## 6、测试 issue 
 
