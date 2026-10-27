@@ -118,4 +118,3 @@ type DiscussionUser struct {
 }
 
 func (DiscussionUser) TableName() string { return "flarum_discussion_user" }
-
