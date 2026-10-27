@@ -15,6 +15,7 @@ import (
 	"github.com/exzco/bbs/internal/api"
 	"github.com/exzco/bbs/internal/auth"
 	"github.com/exzco/bbs/internal/config"
+	"github.com/exzco/bbs/internal/db"
 	"github.com/exzco/bbs/internal/frontend"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -28,6 +29,9 @@ type Server struct {
 func New(cfg *config.Config, g *gorm.DB) (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "avatars"), 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
+	}
+	if !cfg.ReadOnly {
+		_ = db.CleanupJoinTableDuplicates(g)
 	}
 	return &Server{cfg: cfg, db: g}, nil
 }

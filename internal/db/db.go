@@ -98,7 +98,30 @@ func InitializeEmpty(g *gorm.DB) error {
 	if err := Migrate(g); err != nil {
 		return err
 	}
+	_ = CleanupJoinTableDuplicates(g)
 	return SeedDefaults(g)
+}
+
+// CleanupJoinTableDuplicates removes duplicate rows from join tables and ensures
+// unique indexes exist so SQLite mirrors don't accumulate duplicates.
+func CleanupJoinTableDuplicates(g *gorm.DB) error {
+	if g == nil || g.Dialector == nil {
+		return nil
+	}
+	if g.Dialector.Name() == "sqlite" {
+		if !g.Migrator().HasTable("flarum_discussion_tag") || !g.Migrator().HasTable("flarum_group_user") {
+			return nil
+		}
+		_ = g.Exec(`DELETE FROM flarum_discussion_tag WHERE rowid NOT IN (
+			SELECT MIN(rowid) FROM flarum_discussion_tag GROUP BY discussion_id, tag_id
+		)`).Error
+		_ = g.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_flarum_discussion_tag ON flarum_discussion_tag(discussion_id, tag_id)`).Error
+		_ = g.Exec(`DELETE FROM flarum_group_user WHERE rowid NOT IN (
+			SELECT MIN(rowid) FROM flarum_group_user GROUP BY user_id, group_id
+		)`).Error
+		_ = g.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_flarum_group_user ON flarum_group_user(user_id, group_id)`).Error
+	}
+	return nil
 }
 
 func migrateModels(g *gorm.DB) error {

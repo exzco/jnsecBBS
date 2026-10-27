@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useMutation } from "@tanstack/react-query"
-import { Link, useLocation, useNavigate } from "react-router"
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import type { User } from "@/lib/types"
@@ -13,18 +13,31 @@ import { Label } from "@/components/ui/label"
 export default function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
+  const [searchParams] = useSearchParams()
   const invalidate = useInvalidateSession()
   const { data: session } = useSession()
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
+
+  // 支持 location.state.from 与 query 参数 ?from= 或 ?redirect=
+  const stateFrom = (location.state as { from?: string } | null)?.from
+  const queryFrom = searchParams.get("from") || searchParams.get("redirect")
+  const rawFrom = stateFrom || queryFrom || "/"
+  // 安全校验：避免重定向至登录/注册造成死循环
+  const safeFrom =
+    rawFrom.startsWith("/") &&
+    !rawFrom.startsWith("//") &&
+    !rawFrom.startsWith("/login") &&
+    !rawFrom.startsWith("/register")
+      ? rawFrom
+      : "/"
 
   const login = useMutation({
     mutationFn: () => api<{ user: User }>("/api/auth/login", { json: { username, password } }),
     onSuccess: () => {
       invalidate()
       toast.success("登录成功")
-      const from = (location.state as { from?: string } | null)?.from ?? "/"
-      navigate(from)
+      navigate(safeFrom, { replace: true })
     },
     onError: (e) => toast.error((e as Error).message),
   })
@@ -45,7 +58,13 @@ export default function LoginPage() {
           >
             <div className="space-y-2">
               <Label htmlFor="username">用户名</Label>
-              <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
+              <Input
+                id="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                required
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">密码</Label>
@@ -59,12 +78,19 @@ export default function LoginPage() {
               />
             </div>
             <Button type="submit" className="w-full" disabled={login.isPending}>
-              登录
+              {login.isPending ? "登录中…" : "登录"}
             </Button>
           </form>
           {!session?.readOnly && session?.registration === "open" && (
             <p className="mt-4 text-center text-sm text-muted-foreground">
-              还没有账号？<Link to="/register" className="text-primary hover:underline">立即注册</Link>
+              还没有账号？
+              <Link
+                to={`/register?from=${encodeURIComponent(safeFrom)}`}
+                state={{ from: safeFrom }}
+                className="text-primary hover:underline font-medium"
+              >
+                立即注册
+              </Link>
             </p>
           )}
         </CardContent>

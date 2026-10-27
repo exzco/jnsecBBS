@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { cn } from "cn"
 
 export function UsersTab({ meta }: { meta?: AdminMeta }) {
   const qc = useQueryClient()
@@ -23,11 +24,29 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
   const save = useMutation({
     mutationFn: ({ id, body }: { id: number; body: Record<string, unknown> }) =>
       api(`/api/admin/users/${id}`, { json: body }),
-    onSuccess: () => {
+    onMutate: async ({ id, body }) => {
+      await qc.cancelQueries({ queryKey: ["adminUsers"] })
+      const previous = qc.getQueryData<{ users: AdminUserRow[] }>(["adminUsers", query])
+      if (previous && (body.action === "ban" || body.action === "unban")) {
+        const isBanned = body.action === "ban"
+        qc.setQueryData<{ users: AdminUserRow[] }>(["adminUsers", query], {
+          users: previous.users.map((u) =>
+            u.user.id === id ? { ...u, user: { ...u.user, isBanned } } : u,
+          ),
+        })
+      }
+      return { previous }
+    },
+    onError: (e, _vars, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["adminUsers", query], context.previous)
+      }
+      toast.error((e as Error).message)
+    },
+    onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["adminUsers"] })
       toast.success("已保存")
     },
-    onError: (e) => toast.error((e as Error).message),
   })
 
   return (
@@ -45,25 +64,25 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
         </Button>
       </form>
       <Card className="overflow-x-auto p-0">
-        <Table>
+        <Table className="table-fixed min-w-[760px]">
           <TableHeader>
             <TableRow>
-              <TableHead>ID</TableHead>
-              <TableHead>用户名</TableHead>
-              <TableHead>邮箱</TableHead>
-              <TableHead>用户组</TableHead>
-              <TableHead>主题/回复</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead>操作</TableHead>
+              <TableHead className="w-16">ID</TableHead>
+              <TableHead className="w-36">用户名</TableHead>
+              <TableHead className="w-52">邮箱</TableHead>
+              <TableHead className="w-48">用户组</TableHead>
+              <TableHead className="w-28">主题/回复</TableHead>
+              <TableHead className="w-24">状态</TableHead>
+              <TableHead className="w-28">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {(data?.users ?? []).map((row) => (
               <TableRow key={row.user.id}>
-                <TableCell>{row.user.id}</TableCell>
-                <TableCell className="font-medium">{row.user.username}</TableCell>
-                <TableCell className="text-muted-foreground">{row.email}</TableCell>
-                <TableCell>
+                <TableCell className="w-16 font-mono text-xs">{row.user.id}</TableCell>
+                <TableCell className="w-36 font-medium truncate">{row.user.username}</TableCell>
+                <TableCell className="w-52 text-muted-foreground truncate">{row.email}</TableCell>
+                <TableCell className="w-48">
                   <div className="flex flex-wrap items-center gap-2">
                     {meta?.groups
                       .filter((g) => g.id !== 2)
@@ -83,21 +102,29 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
                       ))}
                   </div>
                 </TableCell>
-                <TableCell>
+                <TableCell className="w-28 text-xs">
                   {row.user.discussionsCount} / {row.user.postsCount}
                 </TableCell>
-                <TableCell>
-                  {row.user.isBanned ? (
-                    <span className="text-xs font-semibold text-red-600">已封禁</span>
-                  ) : (
-                    <span className="text-xs font-semibold text-green-600">正常</span>
-                  )}
+                <TableCell className="w-24">
+                  <span
+                    className={cn(
+                      "inline-block w-14 text-xs font-semibold",
+                      row.user.isBanned ? "text-red-600" : "text-green-600",
+                    )}
+                  >
+                    {row.user.isBanned ? "已封禁" : "正常"}
+                  </span>
                 </TableCell>
-                <TableCell>
+                <TableCell className="w-28">
                   <Button
                     variant="outline"
                     size="sm"
-                    className={row.user.isBanned ? "" : "text-red-600"}
+                    className={cn(
+                      "w-[76px] justify-center gap-1.5",
+                      row.user.isBanned
+                        ? "text-foreground hover:bg-muted"
+                        : "text-red-600 hover:bg-red-500/10 hover:text-red-600",
+                    )}
                     onClick={() =>
                       save.mutate({
                         id: row.user.id,
@@ -105,7 +132,8 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
                       })
                     }
                   >
-                    <Ban className="size-3.5" /> {row.user.isBanned ? "解封" : "封禁"}
+                    <Ban className="size-3.5 shrink-0" />
+                    <span>{row.user.isBanned ? "解封" : "封禁"}</span>
                   </Button>
                 </TableCell>
               </TableRow>

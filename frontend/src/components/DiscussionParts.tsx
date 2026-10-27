@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "react-router"
-import { MessageSquare } from "lucide-react"
+import { MessageSquare, Pin, Lock, Trash2 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "cn"
@@ -15,17 +15,48 @@ export function UserAvatar({ user, className }: { user: User | null; className?:
   )
 }
 
-export function TagChip({ tag, onColor = false }: { tag: Tag; onColor?: boolean }) {
+export function TagChip({
+  tag,
+  onColor = false,
+  className,
+}: {
+  tag: Tag
+  onColor?: boolean
+  className?: string
+}) {
+  const rawColor = tag.color?.trim()
+  const color = rawColor && /^#[0-9a-fA-F]{3,8}$/.test(rawColor) ? rawColor : "#00838f"
+
+  if (onColor) {
+    return (
+      <Link
+        to={`/?board=${encodeURIComponent(tag.slug)}`}
+        onClick={(e) => e.stopPropagation()}
+        className={cn(
+          "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors bg-white/20 text-white hover:bg-white/35",
+          className,
+        )}
+      >
+        {tag.name}
+      </Link>
+    )
+  }
+
   return (
     <Link
-      to={`/t/${tag.slug}`}
+      to={`/?board=${encodeURIComponent(tag.slug)}`}
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        backgroundColor: `${color}18`,
+        color: color,
+        borderColor: `${color}35`,
+      }}
       className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors",
-        onColor
-          ? "bg-white/20 text-white hover:bg-white/35"
-          : "border bg-secondary/60 text-secondary-foreground hover:bg-secondary",
+        "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition-all hover:brightness-110",
+        className,
       )}
     >
+      <span className="mr-1.5 size-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
       {tag.name}
     </Link>
   )
@@ -40,7 +71,7 @@ export function GroupBadges({ user }: { user: User }) {
           <Badge
             key={g.id}
             variant="outline"
-            className="text-[10px] px-1.5 py-0"
+            className="text-[10px] px-1.5 py-0 font-medium"
             style={g.color ? { color: g.color, borderColor: `${g.color}66` } : undefined}
           >
             {g.name}
@@ -50,7 +81,7 @@ export function GroupBadges({ user }: { user: User }) {
   )
 }
 
-// 紧凑行（首页最新流）：整行可点进入详情；onOpen 存在时交给外层内嵌渲染
+// 现代化 Reddit / Shadcn 风格讨论卡片：加粗超大标题、全宽视觉空间、清晰元信息与交互药丸
 export function DiscussionRowCompact({
   d,
   onOpen,
@@ -60,111 +91,91 @@ export function DiscussionRowCompact({
 }) {
   const navigate = useNavigate()
   const open = () => (onOpen ? onOpen(d.id) : navigate(`/d/${d.id}-${d.slug}`))
+  const mainTag = d.tags[0]
+
   return (
-    <div
+    <article
       role="link"
       tabIndex={0}
       onClick={open}
       onKeyDown={(e) => e.key === "Enter" && open()}
-      className="flex cursor-pointer items-center gap-3 border-b border-border/50 px-2 py-2 last:border-b-0 hover:bg-muted/40"
+      className="group relative flex flex-col justify-between rounded-xl border border-border/70 bg-card p-4 transition-all duration-200 hover:border-primary/40 hover:shadow-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-5"
     >
-      <Link
-        to={`/u/${d.author?.username ?? ""}`}
-        onClick={(e) => e.stopPropagation()}
-        className="shrink-0"
-      >
-        <UserAvatar user={d.author} className="size-7" />
-      </Link>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
+      {/* 顶部元数据：版块徽标 + 作者头像/名称 + 时间 + 状态 */}
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        {mainTag && <TagChip tag={mainTag} />}
+        <Link
+          to={`/u/${d.author?.username ?? ""}`}
+          onClick={(e) => e.stopPropagation()}
+          className="flex items-center gap-1.5 font-medium text-foreground/85 hover:text-primary hover:underline"
+        >
+          <UserAvatar user={d.author} className="size-5 ring-1 ring-border/60" />
+          <span>{d.author?.username}</span>
+        </Link>
+        <span>•</span>
+        <time>{timeAgo(d.lastPostedAt)}</time>
+
+        <div className="ml-auto flex items-center gap-1.5">
           {d.hasUnread && (
-            <span className="size-2 rounded-full bg-primary shrink-0" title="有未读更新" />
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[11px] font-semibold text-blue-600 dark:text-blue-400"
+              title="有未读更新"
+            >
+              <span className="size-1.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+              未读
+            </span>
           )}
           {d.isSticky && (
-            <span className="shrink-0 rounded bg-orange-500/10 px-1 py-px text-[10px] font-semibold text-orange-600 dark:text-orange-400">
-              置顶
+            <span className="inline-flex items-center gap-0.5 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+              <Pin className="size-3" /> 置顶
             </span>
           )}
           {d.isLocked && (
-            <span className="shrink-0 rounded bg-blue-500/10 px-1 py-px text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-              锁
+            <span className="inline-flex items-center gap-0.5 rounded-md bg-zinc-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-zinc-700 dark:text-zinc-400">
+              <Lock className="size-3" /> 锁定
             </span>
           )}
-          <span className="truncate text-sm font-medium text-foreground">{d.title}</span>
-        </div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="max-w-28 shrink-0 truncate">{d.author?.username}</span>
-          {d.tags.slice(0, 2).map((t) => (
-            <span
-              key={t.id}
-              className="hidden shrink-0 rounded bg-secondary/60 px-1.5 py-px text-[10px] text-secondary-foreground sm:inline"
-            >
-              {t.name}
+          {d.isHidden && (
+            <span className="inline-flex items-center gap-0.5 rounded-md bg-red-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-red-600 dark:text-red-400">
+              <Trash2 className="size-3" /> 已删除
             </span>
-          ))}
-          <span className="shrink-0">· {timeAgo(d.lastPostedAt)}</span>
+          )}
         </div>
       </div>
-      <div
-        className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground"
-        title={`${d.commentCount} 回复`}
-      >
-        <MessageSquare className="size-3.5" />
-        {d.commentCount}
+
+      {/* 标题：Reddit 风格大号粗体 */}
+      <h2 className="my-2.5 text-base sm:text-lg lg:text-[19px] font-bold tracking-tight text-foreground group-hover:text-primary transition-colors leading-snug">
+        {d.title}
+      </h2>
+
+      {/* 次级标签 */}
+      {d.tags.length > 1 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {d.tags.slice(1).map((t) => (
+            <TagChip key={t.id} tag={t} />
+          ))}
+        </div>
+      )}
+
+      {/* 底部交互条：回复数药丸与最后活跃人 */}
+      <div className="flex items-center justify-between pt-1 text-xs text-muted-foreground">
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full bg-secondary/80 px-3 py-1 font-semibold text-secondary-foreground transition-colors group-hover:bg-primary/10 group-hover:text-primary"
+        >
+          <MessageSquare className="size-3.5" />
+          {d.commentCount} 条回复
+        </span>
+
+        {d.lastPoster && (
+          <span className="text-[11px] text-muted-foreground">
+            最后回复: {d.lastPoster}
+          </span>
+        )}
       </div>
-    </div>
+    </article>
   )
 }
 
 export function DiscussionRow({ d }: { d: DiscussionSummary }) {
-  return (
-    <div className="flex gap-3 py-3.5 border-b border-border/50 last:border-b-0">
-      <Link to={`/u/${d.author?.username ?? ""}`} className="shrink-0">
-        <UserAvatar user={d.author} />
-      </Link>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {d.hasUnread && (
-            <span className="size-2 rounded-full bg-primary shrink-0" title="有未读更新" />
-          )}
-          {d.isSticky && (
-            <span className="inline-flex items-center gap-0.5 rounded bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-orange-600 dark:text-orange-400">
-              置顶
-            </span>
-          )}
-          {d.isLocked && (
-            <span className="inline-flex items-center gap-0.5 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
-              锁定
-            </span>
-          )}
-          {d.isHidden && (
-            <span className="inline-flex items-center rounded bg-red-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-red-600 dark:text-red-400">
-              已删除
-            </span>
-          )}
-          <Link
-            to={`/d/${d.id}-${d.slug}`}
-            className="font-semibold text-foreground hover:text-primary truncate"
-          >
-            {d.title}
-          </Link>
-        </div>
-        <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-          <Link to={`/u/${d.author?.username ?? ""}`} className="hover:text-primary">
-            {d.author?.username}
-          </Link>
-          {d.tags.map((t) => (
-            <TagChip key={t.id} tag={t} />
-          ))}
-        </div>
-      </div>
-      <div className="flex flex-col items-end justify-center text-xs text-muted-foreground whitespace-nowrap">
-        <span>
-          <b className="text-primary text-sm">{d.commentCount}</b> 回复
-        </span>
-        <span>{timeAgo(d.lastPostedAt)}</span>
-        {d.lastPoster && <span>最后 {d.lastPoster}</span>}
-      </div>
-    </div>
-  )
+  return <DiscussionRowCompact d={d} />
 }

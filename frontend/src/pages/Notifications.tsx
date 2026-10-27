@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router"
-import { AtSign, Heart, Reply } from "lucide-react"
+import { AtSign, ChevronLeft, Heart, Reply } from "lucide-react"
 import { toast } from "sonner"
 import { useSession } from "@/lib/session"
 import { api, discussionUrl } from "@/lib/api"
@@ -30,16 +30,34 @@ export default function NotificationsPage() {
   })
 
   return (
-    <div>
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold">通知</h1>
-        <Button variant="outline" size="sm" onClick={() => readAll.mutate()} disabled={readAll.isPending || session?.readOnly}>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-card p-4 shadow-xs">
+        <div className="flex items-center gap-2">
+          <Button asChild variant="ghost" size="sm" className="-ml-2 gap-1 text-muted-foreground hover:text-foreground">
+            <Link to="/">
+              <ChevronLeft className="size-4" /> 返回论坛
+            </Link>
+          </Button>
+          <h1 className="text-xl font-bold tracking-tight text-foreground">通知</h1>
+          {(data?.unread ?? 0) > 0 && (
+            <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-xs font-semibold text-red-600">
+              {data?.unread} 条未读
+            </span>
+          )}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => readAll.mutate()}
+          disabled={readAll.isPending || session?.readOnly || (data?.items.length ?? 0) === 0}
+        >
           全部标记已读
         </Button>
       </div>
-      <div>
+
+      <div className="divide-y divide-border/50 overflow-hidden rounded-xl border border-border/70 bg-card shadow-xs">
         {(data?.items.length ?? 0) === 0 ? (
-          <p className="p-10 text-center text-sm text-muted-foreground">暂无通知。</p>
+          <p className="p-12 text-center text-sm text-muted-foreground">暂无新通知。</p>
         ) : (
           data!.items.map((n) => {
             const Icon = icons[n.type] ?? Reply
@@ -50,23 +68,27 @@ export default function NotificationsPage() {
               <Link
                 key={n.id}
                 to={url}
-                className={`flex items-center gap-3 border-b px-4 py-3 transition-colors last:border-b-0 hover:bg-muted/50 ${
-                  n.read ? "" : "bg-primary/5"
+                className={`flex items-center gap-3.5 px-4 py-3.5 transition-colors hover:bg-muted/50 ${
+                  n.read ? "" : "bg-primary/5 font-medium"
                 }`}
               >
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  <Icon className="size-3.5" />
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                  <Icon className="size-4" />
                 </span>
-                <UserAvatar user={n.sender} className="size-7" />
-                <span className="min-w-0 flex-1 text-sm">
-                  <b>{n.sender?.username}</b>{" "}
-                  {n.type === "reply" && "回复了你的帖子"}
-                  {n.type === "mention" && "在帖子中提到了你"}
-                  {n.type === "like" && "赞了你的回复"}
+                <UserAvatar user={n.sender} className="size-8" />
+                <div className="min-w-0 flex-1 text-sm">
+                  <p className="text-foreground">
+                    <span className="font-semibold">{n.sender?.username}</span>{" "}
+                    {n.type === "reply" && "回复了你的讨论"}
+                    {n.type === "mention" && "在讨论中提到了你"}
+                    {n.type === "like" && "赞了你的发言"}
+                  </p>
                   {n.discussion && (
-                    <span className="block truncate text-primary">{n.discussion.title}</span>
+                    <p className="mt-0.5 truncate text-xs text-primary/80">
+                      {n.discussion.title}
+                    </p>
                   )}
-                </span>
+                </div>
                 <time className="shrink-0 text-xs text-muted-foreground">{timeAgo(n.createdAt)}</time>
               </Link>
             )

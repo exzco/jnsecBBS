@@ -446,6 +446,14 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		}
 		if maxNumber > 0 {
 			now := time.Now()
+			lastPostNum := d.CommentCount
+			if d.LastPostNumber != nil && *d.LastPostNumber > 0 {
+				lastPostNum = *d.LastPostNumber
+			}
+			// 若当前访问为最后一页或周报，则直接同步已读至最新楼层
+			if page >= pages && lastPostNum > maxNumber {
+				maxNumber = lastPostNum
+			}
 			if hasRead {
 				if du.LastReadPostNumber == nil || maxNumber > *du.LastReadPostNumber {
 					du.LastReadPostNumber = &maxNumber
@@ -489,6 +497,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		}
 	}
 	summary := s.discussionSummaryDTO(d, u)
+	summary.HasUnread = false
 	c.JSON(http.StatusOK, gin.H{
 		"discussion": summary,
 		"posts":      views,
@@ -519,8 +528,10 @@ func (s *Server) createDiscussion(c *gin.Context) {
 		okIDs[t.ID] = t
 	}
 	var chosen []models.Tag
+	seenChosen := map[uint]bool{}
 	for _, id := range body.TagIDs {
-		if t, ok := okIDs[id]; ok && len(chosen) < 5 {
+		if t, ok := okIDs[id]; ok && !seenChosen[id] && len(chosen) < 5 {
+			seenChosen[id] = true
 			chosen = append(chosen, t)
 		}
 	}
@@ -724,7 +735,7 @@ func (s *Server) moderate(c *gin.Context) {
 	}
 	id, _ := parseUint(c.Param("id"))
 	var d models.Discussion
-	if err := s.db.Preload("Tags").First(&d, id).Error; err != nil {
+	if err := s.db.First(&d, id).Error; err != nil {
 		fail(c, http.StatusNotFound, "该帖子不存在。")
 		return
 	}
@@ -739,19 +750,30 @@ func (s *Server) moderate(c *gin.Context) {
 	}
 	switch body.Action {
 	case "toggle_sticky":
-		s.db.Model(&d).Update("is_sticky", !d.IsSticky)
+		if err := s.db.Model(&models.Discussion{}).Where("id = ?", d.ID).Update("is_sticky", !d.IsSticky).Error; err != nil {
+			fail(c, http.StatusInternalServerError, "更新置顶状态失败。")
+			return
+		}
 	case "toggle_lock":
-		s.db.Model(&d).Update("is_locked", !d.IsLocked)
+		if err := s.db.Model(&models.Discussion{}).Where("id = ?", d.ID).Update("is_locked", !d.IsLocked).Error; err != nil {
+			fail(c, http.StatusInternalServerError, "更新锁定状态失败。")
+			return
+		}
 	case "toggle_hidden":
-		if d.HiddenAt != nil {
-			s.db.Model(&d).Update("hidden_at", nil)
-		} else {
-			s.db.Model(&d).Update("hidden_at", time.Now())
+		var hiddenAt *time.Time
+		if d.HiddenAt == nil {
+			now := time.Now()
+			hiddenAt = &now
+		}
+		if err := s.db.Model(&models.Discussion{}).Where("id = ?", d.ID).Update("hidden_at", hiddenAt).Error; err != nil {
+			fail(c, http.StatusInternalServerError, "更新隐藏状态失败。")
+			return
 		}
 	case "edit_meta":
 		updates := map[string]any{}
 		if title := strings.TrimSpace(body.Title); title != "" {
 			updates["title"] = title
+			updates["slug"] = slugify(title)
 		}
 		if len(body.TagIDs) > 0 {
 			postable := s.postableTags(u)
@@ -759,21 +781,37 @@ func (s *Server) moderate(c *gin.Context) {
 			for _, t := range postable {
 				okIDs[t.ID] = true
 			}
-			var tags []models.Tag
+			var cleanTagIDs []uint
+			seen := map[uint]bool{}
 			for _, tid := range body.TagIDs {
-				if okIDs[tid] {
-					tags = append(tags, models.Tag{ID: tid})
+				if okIDs[tid] && !seen[tid] {
+					seen[tid] = true
+					cleanTagIDs = append(cleanTagIDs, tid)
 				}
 			}
-			if len(tags) > 0 {
-				if err := s.db.Model(&d).Association("Tags").Replace(tags); err != nil {
+			if len(cleanTagIDs) > 0 {
+				err := s.db.Transaction(func(tx *gorm.DB) error {
+					if err := tx.Exec("DELETE FROM flarum_discussion_tag WHERE discussion_id = ?", d.ID).Error; err != nil {
+						return err
+					}
+					for _, tid := range cleanTagIDs {
+						if err := tx.Exec("INSERT INTO flarum_discussion_tag (discussion_id, tag_id) VALUES (?, ?)", d.ID, tid).Error; err != nil {
+							return err
+						}
+					}
+					return nil
+				})
+				if err != nil {
 					fail(c, http.StatusInternalServerError, "标签更新失败。")
 					return
 				}
 			}
 		}
 		if len(updates) > 0 {
-			s.db.Model(&d).Updates(updates)
+			if err := s.db.Model(&models.Discussion{}).Where("id = ?", d.ID).Updates(updates).Error; err != nil {
+				fail(c, http.StatusInternalServerError, "更新标题失败。")
+				return
+			}
 		}
 	default:
 		fail(c, http.StatusBadRequest, "未知操作。")

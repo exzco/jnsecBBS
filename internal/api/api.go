@@ -334,8 +334,12 @@ func (s *Server) discussionSummaryWithRead(d *models.Discussion, u *models.User,
 
 func (s *Server) discussionSummaryDTO(d *models.Discussion, u *models.User) DiscussionSummaryDTO {
 	tags := make([]TagDTO, 0, len(d.Tags))
+	seenTag := make(map[uint]bool, len(d.Tags))
 	for i := range d.Tags {
-		tags = append(tags, s.tagDTO(&d.Tags[i], u))
+		if !seenTag[d.Tags[i].ID] {
+			seenTag[d.Tags[i].ID] = true
+			tags = append(tags, s.tagDTO(&d.Tags[i], u))
+		}
 	}
 	dto := DiscussionSummaryDTO{
 		ID: d.ID, Title: d.Title, Slug: d.Slug(), Tags: tags,

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react"
+import { Link } from "react-router"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { Camera, Trash2 } from "lucide-react"
+import { Camera, ChevronLeft, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { useSession } from "@/lib/session"
@@ -117,7 +118,14 @@ export default function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-5">
-      <h1 className="text-xl font-bold">账号设置</h1>
+      <div className="flex items-center gap-2">
+        <Button asChild variant="ghost" size="sm" className="-ml-2 gap-1 text-muted-foreground hover:text-foreground">
+          <Link to="/">
+            <ChevronLeft className="size-4" /> 返回论坛
+          </Link>
+        </Button>
+        <h1 className="text-xl font-bold tracking-tight text-foreground">账号设置</h1>
+      </div>
 
       <ProfileForm
         key={me.id}

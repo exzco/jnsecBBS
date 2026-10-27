@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useMutation } from "@tanstack/react-query"
-import { Link, useNavigate } from "react-router"
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router"
 import { RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
@@ -13,13 +13,32 @@ import { Label } from "@/components/ui/label"
 
 export default function RegisterPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const [searchParams] = useSearchParams()
   const invalidate = useInvalidateSession()
   const { data: session } = useSession()
   const inviteMode = session?.registration !== "open"
   const [form, setForm] = useState({
-    invite: "", username: "", email: "", password: "", passwordConfirm: "",
-    captchaId: "", captchaValue: "",
+    invite: "",
+    username: "",
+    email: "",
+    password: "",
+    passwordConfirm: "",
+    captchaId: "",
+    captchaValue: "",
   })
+
+  // 支持 location.state.from 与 query 参数 ?from= 或 ?redirect=
+  const stateFrom = (location.state as { from?: string } | null)?.from
+  const queryFrom = searchParams.get("from") || searchParams.get("redirect")
+  const rawFrom = stateFrom || queryFrom || "/"
+  const safeFrom =
+    rawFrom.startsWith("/") &&
+    !rawFrom.startsWith("//") &&
+    !rawFrom.startsWith("/login") &&
+    !rawFrom.startsWith("/register")
+      ? rawFrom
+      : "/"
 
   // 开放注册时预取一个验证码
   useEffect(() => {
@@ -51,7 +70,7 @@ export default function RegisterPage() {
     onSuccess: () => {
       invalidate()
       toast.success("注册成功，欢迎加入！")
-      navigate("/")
+      navigate(safeFrom, { replace: true })
     },
     onError: (e) => {
       toast.error((e as Error).message)
@@ -73,31 +92,67 @@ export default function RegisterPage() {
             className="space-y-4"
             onSubmit={(e) => {
               e.preventDefault()
+              if (form.password !== form.passwordConfirm) {
+                toast.error("两次输入的密码不一致")
+                return
+              }
               register.mutate()
             }}
           >
             {inviteMode && (
               <div className="space-y-2">
                 <Label htmlFor="invite">邀请码</Label>
-                <Input id="invite" value={form.invite} onChange={set("invite")} placeholder="向管理员索取" required />
+                <Input
+                  id="invite"
+                  value={form.invite}
+                  onChange={set("invite")}
+                  required
+                  placeholder="请输入邀请码"
+                />
               </div>
             )}
             <div className="space-y-2">
               <Label htmlFor="username">用户名</Label>
-              <Input id="username" value={form.username} onChange={set("username")} pattern="[A-Za-z0-9_\-]{2,20}" required autoComplete="username" />
-              <p className="text-xs text-muted-foreground">2-20 位字母、数字、下划线或连字符</p>
+              <Input
+                id="username"
+                value={form.username}
+                onChange={set("username")}
+                autoComplete="username"
+                required
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="email">邮箱</Label>
-              <Input id="email" type="email" value={form.email} onChange={set("email")} required autoComplete="email" />
+              <Input
+                id="email"
+                type="email"
+                value={form.email}
+                onChange={set("email")}
+                autoComplete="email"
+                required
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">密码</Label>
-              <Input id="password" type="password" value={form.password} onChange={set("password")} minLength={8} required autoComplete="new-password" />
+              <Input
+                id="password"
+                type="password"
+                value={form.password}
+                onChange={set("password")}
+                autoComplete="new-password"
+                required
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="passwordConfirm">确认密码</Label>
-              <Input id="passwordConfirm" type="password" value={form.passwordConfirm} onChange={set("passwordConfirm")} minLength={8} required autoComplete="new-password" />
+              <Input
+                id="passwordConfirm"
+                type="password"
+                value={form.passwordConfirm}
+                onChange={set("passwordConfirm")}
+                autoComplete="new-password"
+                required
+              />
             </div>
             {!inviteMode && (
               <div className="space-y-2">
@@ -105,26 +160,45 @@ export default function RegisterPage() {
                 <div className="flex items-center gap-2">
                   {form.captchaId && (
                     <img
-                      src={`/captcha/${form.captchaId}.png`}
+                      src={`/api/auth/captcha?id=${form.captchaId}`}
                       alt="验证码"
-                      title="点击刷新"
-                      className="h-11 cursor-pointer rounded-md border"
+                      className="h-9 w-28 rounded-md border bg-muted object-cover"
                       onClick={newCaptcha}
+                      title="点击刷新验证码"
                     />
                   )}
-                  <Input id="captchaValue" value={form.captchaValue} onChange={set("captchaValue")} required autoComplete="off" />
-                  <Button type="button" variant="ghost" size="icon" onClick={newCaptcha} aria-label="刷新验证码">
+                  <Input
+                    id="captchaValue"
+                    value={form.captchaValue}
+                    onChange={set("captchaValue")}
+                    required
+                    autoComplete="off"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={newCaptcha}
+                    aria-label="刷新验证码"
+                  >
                     <RefreshCw />
                   </Button>
                 </div>
               </div>
             )}
             <Button type="submit" className="w-full" disabled={register.isPending}>
-              注册
+              {register.isPending ? "注册中…" : "注册"}
             </Button>
           </form>
           <p className="mt-4 text-center text-sm text-muted-foreground">
-            已有账号？<Link to="/login" className="text-primary hover:underline">直接登录</Link>
+            已有账号？
+            <Link
+              to={`/login?from=${encodeURIComponent(safeFrom)}`}
+              state={{ from: safeFrom }}
+              className="text-primary hover:underline font-medium"
+            >
+              直接登录
+            </Link>
           </p>
         </CardContent>
       </Card>

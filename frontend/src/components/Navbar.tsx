@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react"
-import { Link, useNavigate } from "react-router"
+import { Link, useLocation, useNavigate } from "react-router"
 import { useTheme } from "next-themes"
 import { Bell, ChevronLeft, LogOut, Moon, Search, SquarePen, Sun } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -16,8 +16,10 @@ export function Navbar({ siteName }: { siteName: string }) {
   const { data: unread = 0 } = useUnread(!!user)
   const [q, setQ] = useState("")
   const navigate = useNavigate()
+  const location = useLocation()
   const invalidate = useInvalidateSession()
   const { resolvedTheme, setTheme } = useTheme()
+  const currentPath = location.pathname + location.search
 
   function submitSearch(e: FormEvent) {
     e.preventDefault()
@@ -37,10 +39,10 @@ export function Navbar({ siteName }: { siteName: string }) {
 
   return (
     <header
-      className="sticky top-0 z-50 shadow-md"
+      className="sticky top-0 z-50 shrink-0 shadow-md"
       style={{ background: "linear-gradient(90deg, #005661, #00838f)" }}
     >
-      <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4">
+      <div className="mx-auto flex h-14 w-full max-w-[1780px] items-center gap-3 px-3 sm:px-6 lg:px-8">
         <button
           aria-label="后退"
           title="后退"
@@ -107,10 +109,20 @@ export function Navbar({ siteName }: { siteName: string }) {
             </>
           ) : (
             <>
-              {!session?.readOnly && <Link to="/register" className="text-sm text-white/90 hover:text-white hover:underline">
-                注册
-              </Link>}
-              <Link to="/login" className="text-sm text-white/90 hover:text-white hover:underline">
+              {!session?.readOnly && (
+                <Link
+                  to={`/register?from=${encodeURIComponent(currentPath)}`}
+                  state={{ from: currentPath }}
+                  className="text-sm font-medium text-white/90 hover:text-white hover:underline"
+                >
+                  注册
+                </Link>
+              )}
+              <Link
+                to={`/login?from=${encodeURIComponent(currentPath)}`}
+                state={{ from: currentPath }}
+                className="text-sm font-medium text-white/90 hover:text-white hover:underline"
+              >
                 登录
               </Link>
             </>

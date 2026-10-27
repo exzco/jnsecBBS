@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link, useSearchParams } from "react-router"
-import { Search as SearchIcon } from "lucide-react"
+import { ChevronLeft, Search as SearchIcon } from "lucide-react"
 import { api, discussionUrl } from "@/lib/api"
 import type { DiscussionSummary, Post } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -58,8 +58,15 @@ export default function SearchPage() {
   })
 
   return (
-    <div>
-      <h1 className="mb-4 text-xl font-bold">搜索</h1>
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Button asChild variant="ghost" size="sm" className="-ml-2 gap-1 text-muted-foreground hover:text-foreground">
+          <Link to="/">
+            <ChevronLeft className="size-4" /> 返回论坛
+          </Link>
+        </Button>
+        <h1 className="text-xl font-bold tracking-tight text-foreground">搜索</h1>
+      </div>
       <form
         className="mb-5 flex gap-2"
         onSubmit={(e) => {

@@ -61,6 +61,9 @@ func TestWeeklyDiscussionDefaultsToLastPageAndTracksRead(t *testing.T) {
 	}
 
 	var res struct {
+		Discussion struct {
+			HasUnread bool `json:"hasUnread"`
+		} `json:"discussion"`
 		Page struct {
 			Page  int `json:"page"`
 			Pages int `json:"pages"`
@@ -80,6 +83,9 @@ func TestWeeklyDiscussionDefaultsToLastPageAndTracksRead(t *testing.T) {
 	if len(res.Posts) == 0 || res.Posts[len(res.Posts)-1].Number != 20 {
 		t.Fatalf("expected latest post (floor 20) to be in posts, got %v", res.Posts)
 	}
+	if res.Discussion.HasUnread {
+		t.Fatalf("expected viewing discussion to mark HasUnread=false, got true")
+	}
 
 	// Verify flarum_discussion_user record was saved
 	var du models.DiscussionUser
@@ -88,5 +94,34 @@ func TestWeeklyDiscussionDefaultsToLastPageAndTracksRead(t *testing.T) {
 	}
 	if du.LastReadPostNumber == nil || *du.LastReadPostNumber != 20 {
 		t.Fatalf("expected last read post number 20, got %v", du.LastReadPostNumber)
+	}
+
+	// Verify subsequent /api/recent returns hasUnread = false
+	wRecent := httptest.NewRecorder()
+	reqRecent := httptest.NewRequest(http.MethodGet, "/api/recent", nil)
+	router.ServeHTTP(wRecent, reqRecent)
+	if wRecent.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", wRecent.Code)
+	}
+	var recentRes struct {
+		Items []struct {
+			ID        uint `json:"id"`
+			HasUnread bool `json:"hasUnread"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(wRecent.Body.Bytes(), &recentRes); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range recentRes.Items {
+		if item.ID == disc.ID {
+			found = true
+			if item.HasUnread {
+				t.Fatalf("expected read discussion to have HasUnread=false in recent stream, got true")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected disc %d to be in recent items", disc.ID)
 	}
 }
