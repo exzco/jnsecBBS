@@ -16,3 +16,4 @@ if ! diff -q deploy/nginx.conf /etc/nginx/sites-available/bbs.jnsec.org >/dev/nu
   sudo cp deploy/nginx.conf /etc/nginx/sites-available/bbs.jnsec.org
   sudo nginx -t && sudo nginx -s reload
 fi
+docker image prune -f
