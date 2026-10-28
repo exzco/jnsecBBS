@@ -75,7 +75,7 @@ func (s *Server) home(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"cards": cards})
 }
 
-// recent 全站最新讨论流（首页主栏与右侧最新栏共用）。
+// recent 全站最新讨论流
 // recent 讨论列表：支持 sidebar=1 自动在服务端排除周报版块，亦兼容客户端传入 exclude=slug1,slug2。
 func (s *Server) recent(c *gin.Context) {
 	u := s.currentUser(c)
@@ -105,9 +105,13 @@ func (s *Server) recent(c *gin.Context) {
 	page := pageParam(c)
 	pages := paginate(int(total), page, perPageDiscussions)
 	var discs []models.Discussion
+	order := "flarum_discussions.last_posted_at DESC, flarum_discussions.id DESC"
+	if c.Query("sidebar") != "1" && c.Query("sticky") != "0" {
+		order = "flarum_discussions.is_sticky DESC, " + order
+	}
 	base.Session(&gorm.Session{}).
 		Preload("User").Preload("Tags").Preload("LastPostUser").
-		Order("flarum_discussions.is_sticky DESC, flarum_discussions.last_posted_at DESC").
+		Order(order).
 		Limit(perPageDiscussions).Offset((page - 1) * perPageDiscussions).Find(&discs)
 
 	discIDs := make([]uint, 0, len(discs))
