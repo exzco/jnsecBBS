@@ -99,6 +99,7 @@ func InitializeEmpty(g *gorm.DB) error {
 		return err
 	}
 	_ = CleanupJoinTableDuplicates(g)
+	_ = SyncHiddenFirstPostDiscussions(g)
 	return SeedDefaults(g)
 }
 
@@ -122,6 +123,25 @@ func CleanupJoinTableDuplicates(g *gorm.DB) error {
 		_ = g.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_flarum_group_user ON flarum_group_user(user_id, group_id)`).Error
 	}
 	return nil
+}
+
+// SyncHiddenFirstPostDiscussions synchronizes flarum_discussions.hidden_at for any
+// discussions whose first post was hidden (e.g. legacy Flarum data or direct post hiding).
+func SyncHiddenFirstPostDiscussions(g *gorm.DB) error {
+	if g == nil || g.Dialector == nil {
+		return nil
+	}
+	if !g.Migrator().HasTable("flarum_discussions") || !g.Migrator().HasTable("flarum_posts") {
+		return nil
+	}
+	return g.Exec(`
+		UPDATE flarum_discussions
+		SET hidden_at = (SELECT hidden_at FROM flarum_posts WHERE flarum_posts.id = flarum_discussions.first_post_id),
+		    hidden_user_id = (SELECT hidden_user_id FROM flarum_posts WHERE flarum_posts.id = flarum_discussions.first_post_id)
+		WHERE hidden_at IS NULL AND EXISTS (
+		    SELECT 1 FROM flarum_posts WHERE flarum_posts.id = flarum_discussions.first_post_id AND flarum_posts.hidden_at IS NOT NULL
+		)
+	`).Error
 }
 
 func migrateModels(g *gorm.DB) error {

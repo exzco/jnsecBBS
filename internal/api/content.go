@@ -34,9 +34,11 @@ func (s *Server) home(c *gin.Context) {
 		}
 	}
 	type latestInfo struct {
-		Title string    `json:"title"`
-		URL   string    `json:"url"`
-		At    time.Time `json:"at"`
+		ID           uint      `json:"id"`
+		Title        string    `json:"title"`
+		URL          string    `json:"url"`
+		LastPostedAt time.Time `json:"lastPostedAt"`
+		At           time.Time `json:"at"`
 	}
 	type card struct {
 		Tag      TagDTO      `json:"tag"`
@@ -51,15 +53,21 @@ func (s *Server) home(c *gin.Context) {
 			cd.Children = append(cd.Children, s.tagDTO(&ch, u))
 			ids = append(ids, ch.ID)
 		}
-		var d models.Discussion
+		var discs []models.Discussion
 		err := s.visibleDiscussions(u).Joins("JOIN flarum_discussion_tag dt ON dt.discussion_id = flarum_discussions.id").
 			Where("dt.tag_id IN ? AND flarum_discussions.hidden_at IS NULL AND flarum_discussions.is_approved = 1", ids).
-			Order("flarum_discussions.last_posted_at DESC").
+			Order("flarum_discussions.last_posted_at DESC, flarum_discussions.id DESC").
 			Preload("User").Preload("Tags").
-			First(&d).Error
-		if err == nil {
+			Limit(1).Find(&discs).Error
+		if err == nil && len(discs) > 0 {
+			d := discs[0]
+			lastPosted := d.LastPostedAtOrZero()
 			cd.Latest = &latestInfo{
-				Title: d.Title, URL: discussionURL(&d), At: d.LastPostedAtOrZero(),
+				ID:           d.ID,
+				Title:        d.Title,
+				URL:          discussionURL(&d),
+				LastPostedAt: lastPosted,
+				At:           lastPosted,
 			}
 		}
 		cards = append(cards, cd)
@@ -374,6 +382,15 @@ func (s *Server) loadDiscussion(c *gin.Context, id uint) (*models.Discussion, *m
 		fail(c, http.StatusNotFound, "该帖子不存在或已被删除。")
 		return nil, nil, false
 	}
+	// 首帖已被隐藏的主题对非版主不可见
+	if !isMod && d.FirstPostID != nil {
+		var hiddenCount int64
+		s.db.Model(&models.Post{}).Where("id = ? AND hidden_at IS NOT NULL", *d.FirstPostID).Count(&hiddenCount)
+		if hiddenCount > 0 {
+			fail(c, http.StatusNotFound, "该帖子不存在或已被删除。")
+			return nil, nil, false
+		}
+	}
 	// flarum/approval：未审核帖仅版主可见
 	if !d.IsApproved && !isMod {
 		fail(c, http.StatusNotFound, "该帖子不存在或已被删除。")
@@ -407,22 +424,31 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		}
 	}
 
+	isMod := u != nil && u.IsModerator()
+
+	postQuery := s.db.Where("discussion_id = ? AND type = ? AND is_approved = ? AND is_private = ?", d.ID, "comment", true, false)
+	if !isMod {
+		postQuery = postQuery.Where("hidden_at IS NULL")
+	}
+
+	var totalComments int64
+	postQuery.Session(&gorm.Session{}).Model(&models.Post{}).Count(&totalComments)
+
 	page := pageParam(c)
-	pages := paginate(d.CommentCount, page, perPagePosts)
+	pages := paginate(int(totalComments), page, perPagePosts)
 
 	// 未传 page 参数（默认直接点开帖子）：定位到未读回复页或周报末页，避免从最旧楼层往下翻
 	if c.Query("page") == "" {
 		if hasRead && du.LastReadPostNumber != nil && *du.LastReadPostNumber > 0 {
 			lastRead := *du.LastReadPostNumber
-			lastPostNum := d.CommentCount
+			lastPostNum := int(totalComments)
 			if d.LastPostNumber != nil && *d.LastPostNumber > 0 {
 				lastPostNum = *d.LastPostNumber
 			}
 			if lastRead < lastPostNum {
 				var countBefore int64
-				s.db.Model(&models.Post{}).
-					Where("discussion_id = ? AND type = 'comment' AND is_approved = 1 AND is_private = 0 AND number <= ?", d.ID, lastRead).
-					Count(&countBefore)
+				countQ := postQuery.Session(&gorm.Session{}).Model(&models.Post{}).Where("number <= ?", lastRead)
+				countQ.Count(&countBefore)
 				page = int(countBefore/perPagePosts) + 1
 			} else if isWeekly && pages > 1 {
 				page = pages
@@ -433,7 +459,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	}
 
 	var posts []models.Post
-	s.db.Where("discussion_id = ? AND type = ? AND is_approved = ? AND is_private = ?", d.ID, "comment", true, false).Order("number ASC").
+	postQuery.Session(&gorm.Session{}).Order("number ASC").
 		Limit(perPagePosts).Offset((page - 1) * perPagePosts).Preload("User").Find(&posts)
 
 	// 记录已读进度
@@ -446,7 +472,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		}
 		if maxNumber > 0 {
 			now := time.Now()
-			lastPostNum := d.CommentCount
+			lastPostNum := int(totalComments)
 			if d.LastPostNumber != nil && *d.LastPostNumber > 0 {
 				lastPostNum = *d.LastPostNumber
 			}
@@ -474,7 +500,6 @@ func (s *Server) discussionDetail(c *gin.Context) {
 
 	liked := s.loadLikes(posts, u)
 
-	isMod := u != nil && u.IsModerator()
 	views := make([]PostDTO, 0, len(posts))
 	for i := range posts {
 		if posts[i].HiddenAt != nil && !isMod {
@@ -501,7 +526,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"discussion": summary,
 		"posts":      views,
-		"page":       PageDTO{Page: page, Pages: pages, Total: d.CommentCount},
+		"page":       PageDTO{Page: page, Pages: pages, Total: int(totalComments)},
 		"canReply":   canReply,
 		"isMod":      isMod && !s.cfg.ReadOnly,
 		"editorTags": editorTags,
@@ -674,9 +699,12 @@ func (s *Server) reply(c *gin.Context) {
 			return err
 		}
 		// 分页按详情接口实际查询的评论位置计算，楼层空隙不会生成空白页。
-		if err := tx.Model(&models.Post{}).
-			Where("discussion_id = ? AND type = ? AND is_approved = ? AND is_private = ?", d.ID, "comment", true, false).
-			Count(&position).Error; err != nil {
+		posQ := tx.Model(&models.Post{}).
+			Where("discussion_id = ? AND type = ? AND is_approved = ? AND is_private = ?", d.ID, "comment", true, false)
+		if !u.IsModerator() {
+			posQ = posQ.Where("hidden_at IS NULL")
+		}
+		if err := posQ.Count(&position).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&models.User{}).Where("id = ?", u.ID).
@@ -834,10 +862,25 @@ func (s *Server) loadPost(c *gin.Context) (*models.Post, *models.User, bool) {
 		fail(c, http.StatusUnauthorized, "请先登录。")
 		return nil, nil, false
 	}
-	if _, _, ok := s.loadDiscussion(c, p.DiscussionID); !ok {
+	var d models.Discussion
+	if err := s.visibleDiscussions(u).Preload("Tags").First(&d, p.DiscussionID).Error; err != nil {
+		fail(c, http.StatusNotFound, "该帖子不存在。")
 		return nil, nil, false
 	}
-	if p.IsPrivate || p.Type != "comment" || (!p.IsApproved && !u.IsModerator()) {
+	s.fillTagPerms(d.Tags)
+	for _, t := range d.Tags {
+		if !auth.CanViewTag(u, &t) {
+			fail(c, http.StatusForbidden, "你没有查看该帖子的权限。")
+			return nil, nil, false
+		}
+	}
+	isMod := u.IsModerator()
+	isAuthor := p.UserID != nil && *p.UserID == u.ID
+	if d.HiddenAt != nil && !isMod && !isAuthor {
+		fail(c, http.StatusNotFound, "该帖子不存在或已被删除。")
+		return nil, nil, false
+	}
+	if p.IsPrivate || p.Type != "comment" || (!p.IsApproved && !isMod) {
 		fail(c, http.StatusNotFound, "该帖子不存在。")
 		return nil, nil, false
 	}
@@ -863,6 +906,9 @@ func (s *Server) postEditGet(c *gin.Context) {
 	var position int64
 	query := s.db.Model(&models.Post{}).
 		Where("discussion_id = ? AND type = ? AND is_approved = ? AND is_private = ?", d.ID, "comment", true, false)
+	if !u.IsModerator() {
+		query = query.Where("hidden_at IS NULL")
+	}
 	if p.Number != nil {
 		query = query.Where("number <= ? OR number IS NULL", *p.Number)
 	} else {
@@ -929,12 +975,40 @@ func (s *Server) hidePost(c *gin.Context) {
 		fail(c, http.StatusForbidden, "无权隐藏该回复。")
 		return
 	}
+	var newHiddenAt *time.Time
 	if p.HiddenAt != nil {
-		s.db.Model(p).Update("hidden_at", nil)
+		s.db.Model(&models.Post{}).Where("id = ?", p.ID).Select("hidden_at", "hidden_user_id").Updates(map[string]any{
+			"hidden_at":      nil,
+			"hidden_user_id": nil,
+		})
 	} else {
-		s.db.Model(p).Update("hidden_at", time.Now())
+		now := time.Now()
+		newHiddenAt = &now
+		s.db.Model(&models.Post{}).Where("id = ?", p.ID).Select("hidden_at", "hidden_user_id").Updates(map[string]any{
+			"hidden_at":      &now,
+			"hidden_user_id": u.ID,
+		})
 	}
-	c.JSON(http.StatusOK, gin.H{"hidden": p.HiddenAt != nil})
+
+	// 若操作的是主楼/首帖，同步设置讨论的隐藏状态
+	var d models.Discussion
+	if err := s.db.Select("id", "first_post_id").First(&d, p.DiscussionID).Error; err == nil {
+		if (p.Number != nil && *p.Number == 1) || (d.FirstPostID != nil && p.ID == *d.FirstPostID) {
+			if newHiddenAt != nil {
+				s.db.Model(&models.Discussion{}).Where("id = ?", d.ID).Select("hidden_at", "hidden_user_id").Updates(map[string]any{
+					"hidden_at":      newHiddenAt,
+					"hidden_user_id": u.ID,
+				})
+			} else {
+				s.db.Model(&models.Discussion{}).Where("id = ?", d.ID).Select("hidden_at", "hidden_user_id").Updates(map[string]any{
+					"hidden_at":      nil,
+					"hidden_user_id": nil,
+				})
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"hidden": newHiddenAt != nil})
 }
 
 func (s *Server) toggleLike(c *gin.Context) {

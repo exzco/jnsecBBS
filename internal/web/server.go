@@ -32,6 +32,7 @@ func New(cfg *config.Config, g *gorm.DB) (*Server, error) {
 	}
 	if !cfg.ReadOnly {
 		_ = db.CleanupJoinTableDuplicates(g)
+		_ = db.SyncHiddenFirstPostDiscussions(g)
 	}
 	return &Server{cfg: cfg, db: g}, nil
 }
