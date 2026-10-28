@@ -52,11 +52,6 @@ export default function ProfilePage() {
               <Link to="/settings">编辑资料与设置</Link>
             </Button>
           )}
-          {!session?.readOnly && session?.user?.isAdmin && (
-            <Button asChild variant="outline" size="sm">
-              <Link to="/admin">管理后台</Link>
-            </Button>
-          )}
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react"
 import { Link, useLocation, useNavigate } from "react-router"
 import { useTheme } from "next-themes"
-import { Bell, ChevronLeft, LogOut, Moon, Search, SquarePen, Sun } from "lucide-react"
+import { Bell, ChevronLeft, LogOut, Moon, Search, ShieldCheck, SquarePen, Sun } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Input } from "@/components/ui/input"
 import { api } from "@/lib/api"
@@ -82,6 +82,16 @@ export function Navbar({ siteName }: { siteName: string }) {
               >
                 <SquarePen className="size-4" /> 发帖
               </Link>}
+              {user.isAdmin && !session?.readOnly && (
+                <Link
+                  to="/admin"
+                  className="inline-flex items-center gap-1 text-sm font-medium text-white/95 hover:text-white hover:underline"
+                  title="管理后台"
+                >
+                  <ShieldCheck className="size-4" />
+                  <span className="hidden sm:inline">管理后台</span>
+                </Link>
+              )}
               <Link to="/notifications" className="relative text-white/95 hover:text-white" aria-label="通知">
                 <Bell className="size-5" />
                 {unread > 0 && (

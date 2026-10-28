@@ -24,6 +24,7 @@ import (
 const (
 	perPageDiscussions = 20
 	perPagePosts       = 15
+	perPageUsers       = 20
 )
 
 type Server struct {

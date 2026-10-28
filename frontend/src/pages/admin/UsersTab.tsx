@@ -1,10 +1,12 @@
 import { useState } from "react"
+import { Link } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Ban, Search } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
-import type { AdminUserRow } from "@/lib/types"
+import type { AdminUserRow, Page } from "@/lib/types"
 import type { AdminMeta } from "../Admin"
+import { Pagination } from "@/components/Pagination"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -16,9 +18,15 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
   const qc = useQueryClient()
   const [q, setQ] = useState("")
   const [query, setQuery] = useState("")
-  const { data } = useQuery({
-    queryKey: ["adminUsers", query],
-    queryFn: () => api<{ users: AdminUserRow[] }>(`/api/admin/users?q=${encodeURIComponent(query)}`),
+  const [page, setPage] = useState(1)
+  const [sort, setSort] = useState<"asc" | "desc">("asc")
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["adminUsers", query, page, sort],
+    queryFn: () =>
+      api<{ users: AdminUserRow[]; page: Page }>(
+        `/api/admin/users?q=${encodeURIComponent(query)}&page=${page}&sort=${sort}`,
+      ),
   })
 
   const save = useMutation({
@@ -26,20 +34,29 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
       api(`/api/admin/users/${id}`, { json: body }),
     onMutate: async ({ id, body }) => {
       await qc.cancelQueries({ queryKey: ["adminUsers"] })
-      const previous = qc.getQueryData<{ users: AdminUserRow[] }>(["adminUsers", query])
+      const previous = qc.getQueryData<{ users: AdminUserRow[]; page: Page }>([
+        "adminUsers",
+        query,
+        page,
+        sort,
+      ])
       if (previous && (body.action === "ban" || body.action === "unban")) {
         const isBanned = body.action === "ban"
-        qc.setQueryData<{ users: AdminUserRow[] }>(["adminUsers", query], {
-          users: previous.users.map((u) =>
-            u.user.id === id ? { ...u, user: { ...u.user, isBanned } } : u,
-          ),
-        })
+        qc.setQueryData<{ users: AdminUserRow[]; page: Page }>(
+          ["adminUsers", query, page, sort],
+          {
+            ...previous,
+            users: previous.users.map((u) =>
+              u.user.id === id ? { ...u, user: { ...u.user, isBanned } } : u,
+            ),
+          },
+        )
       }
       return { previous }
     },
     onError: (e, _vars, context) => {
       if (context?.previous) {
-        qc.setQueryData(["adminUsers", query], context.previous)
+        qc.setQueryData(["adminUsers", query, page, sort], context.previous)
       }
       toast.error((e as Error).message)
     },
@@ -56,9 +73,14 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
         onSubmit={(e) => {
           e.preventDefault()
           setQuery(q)
+          setPage(1)
         }}
       >
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索用户名 / 邮箱" />
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="搜索 ID / 用户名 / 邮箱"
+        />
         <Button type="submit" variant="outline" className="gap-1.5">
           <Search className="size-4" /> 搜索
         </Button>
@@ -67,7 +89,19 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
         <Table className="table-fixed min-w-[760px]">
           <TableHeader>
             <TableRow>
-              <TableHead className="w-16">ID</TableHead>
+              <TableHead
+                className="w-20 cursor-pointer select-none hover:text-foreground"
+                onClick={() => {
+                  setSort((prev) => (prev === "asc" ? "desc" : "asc"))
+                  setPage(1)
+                }}
+                title="点击切换升序/降序"
+              >
+                <div className="flex items-center gap-1">
+                  <span>ID</span>
+                  <span className="text-xs text-muted-foreground">{sort === "asc" ? "▲" : "▼"}</span>
+                </div>
+              </TableHead>
               <TableHead className="w-36">用户名</TableHead>
               <TableHead className="w-52">邮箱</TableHead>
               <TableHead className="w-48">用户组</TableHead>
@@ -79,8 +113,16 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
           <TableBody>
             {(data?.users ?? []).map((row) => (
               <TableRow key={row.user.id}>
-                <TableCell className="w-16 font-mono text-xs">{row.user.id}</TableCell>
-                <TableCell className="w-36 font-medium truncate">{row.user.username}</TableCell>
+                <TableCell className="w-20 font-mono text-xs">{row.user.id}</TableCell>
+                <TableCell className="w-36 font-medium truncate">
+                  <Link
+                    to={`/u/${encodeURIComponent(row.user.username)}`}
+                    className="text-foreground hover:text-primary hover:underline transition-colors"
+                    title={`查看 ${row.user.username} 的主页`}
+                  >
+                    {row.user.username}
+                  </Link>
+                </TableCell>
                 <TableCell className="w-52 text-muted-foreground truncate">{row.email}</TableCell>
                 <TableCell className="w-48">
                   <div className="flex flex-wrap items-center gap-2">
@@ -138,9 +180,24 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
                 </TableCell>
               </TableRow>
             ))}
+            {(data?.users ?? []).length === 0 && (
+              <TableRow>
+                <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                  {isLoading ? "加载中…" : "未找到匹配的用户。"}
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </Card>
+      {data?.page && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-2 px-1">
+          <span className="text-xs text-muted-foreground">
+            共 {data.page.total} 位用户，第 {data.page.page} / {data.page.pages} 页
+          </span>
+          <Pagination page={data.page} onPage={setPage} />
+        </div>
+      )}
     </div>
   )
 }

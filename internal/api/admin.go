@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,18 +175,55 @@ type adminUserRow struct {
 
 func (s *Server) adminUsers(c *gin.Context) {
 	q := strings.TrimSpace(c.Query("q"))
-	db := s.db.Order("joined_at DESC").Limit(100)
+	base := s.db.Model(&models.User{})
 	if q != "" {
-		db = db.Where("username LIKE ? OR email LIKE ?", "%"+q+"%", "%"+q+"%")
+		if uid, err := strconv.ParseUint(q, 10, 32); err == nil {
+			base = base.Where("id = ? OR username LIKE ? OR email LIKE ?", uid, "%"+q+"%", "%"+q+"%")
+		} else {
+			base = base.Where("username LIKE ? OR email LIKE ?", "%"+q+"%", "%"+q+"%")
+		}
 	}
+
+	var total int64
+	base.Session(&gorm.Session{}).Count(&total)
+
+	perPage := perPageUsers
+	if pp, err := strconv.Atoi(c.Query("per_page")); err == nil && pp > 0 && pp <= 100 {
+		perPage = pp
+	}
+
+	page := pageParam(c)
+	pages := paginate(int(total), page, perPage)
+	if page > pages {
+		page = pages
+	}
+
+	orderClause := "id ASC"
+	if c.Query("sort") == "desc" || c.Query("order") == "desc" {
+		orderClause = "id DESC"
+	}
+
+	offset := (page - 1) * perPage
+	if offset < 0 {
+		offset = 0
+	}
+
 	var users []models.User
-	db.Preload("Groups").Find(&users)
+	base.Session(&gorm.Session{}).
+		Preload("Groups").
+		Order(orderClause).
+		Limit(perPage).Offset(offset).
+		Find(&users)
+
 	rows := make([]adminUserRow, 0, len(users))
 	for i := range users {
 		u := &users[i]
 		rows = append(rows, adminUserRow{User: userDTO(u), Email: u.Email, GroupIDs: u.GroupIDs()})
 	}
-	c.JSON(http.StatusOK, gin.H{"users": rows})
+	c.JSON(http.StatusOK, gin.H{
+		"users": rows,
+		"page":  PageDTO{Page: page, Pages: pages, Total: int(total)},
+	})
 }
 
 func (s *Server) adminUserSave(c *gin.Context) {
