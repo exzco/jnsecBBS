@@ -2,7 +2,7 @@ import type { QueryClient, InfiniteData } from "@tanstack/react-query"
 import type { RecentData } from "@/lib/types"
 
 /**
- * 乐观同步更新客户端 React Query 缓存中特定讨论的已读状态。
+ * 同步更新客户端 React Query 缓存中特定讨论的已读状态。
  * 当用户点开某个帖子或内嵌查看详情时调用，使得退出/返回列表时该帖子的未读小圆点立即消失。
  */
 export function markDiscussionAsReadInCache(qc: QueryClient, discussionId: number) {

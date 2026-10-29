@@ -1,4 +1,3 @@
-// 极简 fetch 封装：统一 JSON、CSRF 头与错误处理
 let csrfToken = ""
 
 export function setCsrfToken(t: string) {

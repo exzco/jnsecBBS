@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { useSession } from "@/lib/session"
 import { UserAvatar } from "@/components/DiscussionParts"
+import { AvatarCropperModal } from "@/components/AvatarCropperModal"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -95,6 +96,8 @@ export default function SettingsPage() {
   const readOnly = !!session?.readOnly
   const fileRef = useRef<HTMLInputElement>(null)
   const [pwd, setPwd] = useState({ current: "", next: "", confirm: "" })
+  const [cropModalOpen, setCropModalOpen] = useState(false)
+  const [cropImageSrc, setCropImageSrc] = useState<string | null>(null)
 
   const changePwd = useMutation({
     mutationFn: (body: Record<string, unknown>) => api("/api/me/password", { json: body }),
@@ -113,6 +116,17 @@ export default function SettingsPage() {
     },
     onError: (e) => toast.error((e as Error).message),
   })
+
+  const handleCropConfirm = (blob: Blob) => {
+    const fd = new FormData()
+    fd.append("file", blob, "avatar.png")
+    avatar.mutate(fd, {
+      onSuccess: () => {
+        setCropModalOpen(false)
+        setCropImageSrc(null)
+      },
+    })
+  }
 
   if (!me) return null
 
@@ -147,13 +161,21 @@ export default function SettingsPage() {
               type="file"
               accept="image/png,image/jpeg"
               className="hidden"
-              onChange={() => {
-                const f = fileRef.current?.files?.[0]
+              onChange={(e) => {
+                const f = e.target.files?.[0]
                 if (f) {
-                  const fd = new FormData()
-                  fd.append("file", f)
-                  avatar.mutate(fd)
+                  if (f.size > 10 * 1024 * 1024) {
+                    toast.error("图片文件过大，请选择不超过 10MB 的图片。")
+                    return
+                  }
+                  const reader = new FileReader()
+                  reader.onload = () => {
+                    setCropImageSrc(reader.result as string)
+                    setCropModalOpen(true)
+                  }
+                  reader.readAsDataURL(f)
                 }
+                e.target.value = ""
               }}
             />
             <div className="flex gap-2">
@@ -175,10 +197,21 @@ export default function SettingsPage() {
                 </Button>
               )}
             </div>
-            <p className="text-xs text-muted-foreground">PNG / JPG，不超过 2MB，自动裁剪为 128×128</p>
+            <p className="text-xs text-muted-foreground">PNG / JPG，支持自选裁剪范围，生成 128×128 高清头像</p>
           </div>
         </CardContent>
       </Card>
+
+      <AvatarCropperModal
+        open={cropModalOpen}
+        imageSrc={cropImageSrc}
+        isUploading={avatar.isPending}
+        onClose={() => {
+          setCropModalOpen(false)
+          setCropImageSrc(null)
+        }}
+        onConfirm={handleCropConfirm}
+      />
 
       <Card>
         <CardHeader>
