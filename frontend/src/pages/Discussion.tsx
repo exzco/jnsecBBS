@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router"
 import {
-  ChevronLeft, Flag, Heart, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2,
+  ChevronLeft, Eye, Flag, Heart, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useSession } from "@/lib/session"
@@ -315,6 +315,9 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
             {d.author?.username}
           </Link>
           <time>{timeAgo(d.createdAt)}</time>
+          <span className="inline-flex items-center gap-1 text-xs" title={`浏览量: ${d.viewCount ?? 0} 次`}>
+            <Eye className="size-3.5" /> {d.viewCount ?? 0} 次浏览
+          </span>
           {d.isLocked && (
             <span className="inline-flex items-center gap-1 text-xs">
               <Lock className="size-3.5" /> 已锁定
@@ -332,6 +335,41 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
       </section>
 
       <Pagination page={data.page} onPage={goPage} />
+
+      {data.viewers && data.viewers.length > 0 && (
+        <div className="mt-4 mb-2 rounded-xl border border-border/70 bg-card/60 p-3.5 shadow-xs">
+          <div className="mb-2.5 flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+              <Users className="size-3.5 text-primary" />
+              <span>最近浏览者</span>
+              <span className="rounded-full bg-muted px-1.5 py-0.2 text-[11px] font-normal text-muted-foreground">
+                {data.viewers.length} 人
+              </span>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              累计浏览 {d.viewCount ?? 0} 次
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {data.viewers.map((viewer) => (
+              <Link
+                key={viewer.user.id}
+                to={`/u/${viewer.user.username}`}
+                title={`${viewer.user.username} · ${timeAgo(viewer.visitedAt)}`}
+                className="group flex items-center gap-1.5 rounded-full border border-border/60 bg-background/80 py-1 pl-1 pr-2.5 text-xs transition hover:border-primary/50 hover:bg-muted"
+              >
+                <UserAvatar user={viewer.user} className="size-5" />
+                <span className="font-medium text-foreground/90 group-hover:text-primary">
+                  {viewer.user.username}
+                </span>
+                <span className="text-[11px] text-muted-foreground/75">
+                  {timeAgo(viewer.visitedAt)}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {data.canReply ? (
         <div id="reply-form" className="mt-2 rounded-xl bg-muted/40 p-4">

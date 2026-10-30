@@ -118,3 +118,15 @@ type DiscussionUser struct {
 }
 
 func (DiscussionUser) TableName() string { return "flarum_discussion_user" }
+
+// DiscussionView 记录讨论帖子的访问与浏览历史（兼容 Flarum 原生 flarum_discussion_views 表）。
+type DiscussionView struct {
+	ID           uint      `gorm:"column:id;primaryKey;autoIncrement"`
+	UserID       *uint     `gorm:"column:user_id"`
+	User         *User     `gorm:"foreignKey:UserID"`
+	DiscussionID uint      `gorm:"column:discussion_id"`
+	IP           string    `gorm:"column:ip;type:varchar(16)"`
+	VisitedAt    time.Time `gorm:"column:visited_at"`
+}
+
+func (DiscussionView) TableName() string { return "flarum_discussion_views" }

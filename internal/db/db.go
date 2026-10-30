@@ -149,7 +149,7 @@ func migrateModels(g *gorm.DB) error {
 		&models.User{}, &models.Group{}, &models.Discussion{}, &models.Post{},
 		&models.PostLike{}, &models.Tag{}, &models.Notification{}, &models.AccessToken{},
 		&models.InviteCode{}, &models.Setting{}, &models.GroupPermission{}, &models.UserProfile{},
-		&models.DiscussionUser{},
+		&models.DiscussionUser{}, &models.DiscussionView{},
 	); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}

@@ -41,6 +41,7 @@ export interface DiscussionSummary {
   tags: Tag[]
   author: User | null
   commentCount: number
+  viewCount: number
   createdAt: string
   lastPostedAt: string
   lastPoster?: string
@@ -100,6 +101,11 @@ export interface HomeCard {
   latest: { title: string; url: string; at: string } | null
 }
 
+export interface DiscussionViewer {
+  user: User
+  visitedAt: string
+}
+
 export interface DiscussionDetail {
   discussion: DiscussionSummary
   posts: Post[]
@@ -107,6 +113,7 @@ export interface DiscussionDetail {
   canReply: boolean
   isMod: boolean
   editorTags: Tag[]
+  viewers?: DiscussionViewer[]
 }
 
 export interface ProfileData {

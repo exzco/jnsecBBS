@@ -297,6 +297,7 @@ type DiscussionSummaryDTO struct {
 	Tags         []TagDTO  `json:"tags"`
 	Author       *UserDTO  `json:"author"`
 	CommentCount int       `json:"commentCount"`
+	ViewCount    int       `json:"viewCount"`
 	CreatedAt    time.Time `json:"createdAt"`
 	LastPostedAt time.Time `json:"lastPostedAt"`
 	LastPoster   string    `json:"lastPoster,omitempty"`
@@ -304,6 +305,11 @@ type DiscussionSummaryDTO struct {
 	IsLocked     bool      `json:"isLocked"`
 	IsHidden     bool      `json:"isHidden"`
 	HasUnread    bool      `json:"hasUnread"`
+}
+
+type DiscussionViewerDTO struct {
+	User      UserDTO   `json:"user"`
+	VisitedAt time.Time `json:"visitedAt"`
 }
 
 func (s *Server) loadReadMap(discIDs []uint, u *models.User) map[uint]int {
@@ -349,6 +355,7 @@ func (s *Server) discussionSummaryDTO(d *models.Discussion, u *models.User) Disc
 		ID: d.ID, Title: d.Title, Slug: d.Slug(), Tags: tags,
 		Author:       userDTO(&d.User),
 		CommentCount: d.CommentCount,
+		ViewCount:    d.ViewCount,
 		CreatedAt:    d.CreatedAt, LastPostedAt: d.LastPostedAtOrZero(),
 		IsSticky: d.IsSticky, IsLocked: d.IsLocked, IsHidden: d.HiddenAt != nil,
 	}

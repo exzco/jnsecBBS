@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "react-router"
-import { MessageSquare, Pin, Lock, Trash2 } from "lucide-react"
+import { Eye, MessageSquare, Pin, Lock, Trash2 } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "cn"
@@ -157,14 +157,25 @@ export function DiscussionRowCompact({
         </div>
       )}
 
-      {/* 底部交互条：回复数药丸与最后活跃人 */}
+      {/* 底部交互条：回复数药丸、浏览量与最后活跃人 */}
       <div className="flex items-center justify-between pt-1 text-xs text-muted-foreground">
-        <span
-          className="inline-flex items-center gap-1.5 rounded-full bg-secondary/80 px-3 py-1 font-semibold text-secondary-foreground transition-colors group-hover:bg-primary/10 group-hover:text-primary"
-        >
-          <MessageSquare className="size-3.5" />
-          {d.commentCount} 条回复
-        </span>
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full bg-secondary/80 px-3 py-1 font-semibold text-secondary-foreground transition-colors group-hover:bg-primary/10 group-hover:text-primary"
+          >
+            <MessageSquare className="size-3.5" />
+            {d.commentCount} 条回复
+          </span>
+          {typeof d.viewCount === "number" && d.viewCount > 0 && (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] text-muted-foreground/80"
+              title={`浏览量: ${d.viewCount} 次`}
+            >
+              <Eye className="size-3" />
+              {d.viewCount}
+            </span>
+          )}
+        </div>
 
         {d.lastPoster && (
           <span className="text-[11px] text-muted-foreground">

@@ -506,6 +506,44 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		}
 	}
 
+	// 记录浏览量与浏览历史（非只读模式下）
+	if !s.cfg.ReadOnly {
+		now := time.Now()
+		threshold := now.Add(-5 * time.Minute)
+		clientIP := c.ClientIP()
+		if len(clientIP) > 16 {
+			clientIP = clientIP[:16]
+		}
+		var recentCount int64
+		q := s.db.Model(&models.DiscussionView{}).Where("discussion_id = ? AND visited_at >= ?", d.ID, threshold)
+		if u != nil {
+			q = q.Where("user_id = ?", u.ID)
+		} else {
+			q = q.Where("user_id IS NULL AND ip = ?", clientIP)
+		}
+		_ = q.Count(&recentCount).Error
+
+		if recentCount == 0 {
+			var uid *uint
+			if u != nil {
+				uid = &u.ID
+			}
+			_ = s.db.Create(&models.DiscussionView{
+				UserID:       uid,
+				DiscussionID: d.ID,
+				IP:           clientIP,
+				VisitedAt:    now,
+			}).Error
+			_ = s.db.Model(&models.Discussion{}).Where("id = ?", d.ID).UpdateColumn("view_count", gorm.Expr("view_count + 1")).Error
+			d.ViewCount++
+		} else if u != nil {
+			_ = s.db.Model(&models.DiscussionView{}).
+				Where("discussion_id = ? AND user_id = ?", d.ID, u.ID).
+				Order("id DESC").Limit(1).
+				Update("visited_at", now).Error
+		}
+	}
+
 	liked := s.loadLikes(posts, u)
 
 	views := make([]PostDTO, 0, len(posts))
@@ -531,6 +569,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	}
 	summary := s.discussionSummaryDTO(d, u)
 	summary.HasUnread = false
+	viewers := s.loadDiscussionViewers(d.ID)
 	c.JSON(http.StatusOK, gin.H{
 		"discussion": summary,
 		"posts":      views,
@@ -538,7 +577,66 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		"canReply":   canReply,
 		"isMod":      isMod && !s.cfg.ReadOnly,
 		"editorTags": editorTags,
+		"viewers":    viewers,
 	})
+}
+
+type viewerResult struct {
+	UserID    uint   `gorm:"column:user_id"`
+	VisitedAt string `gorm:"column:visited_at"`
+}
+
+func parseVisitedAt(v string) time.Time {
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		time.RFC3339Nano,
+		time.RFC3339,
+	} {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t
+		}
+	}
+	return time.Now()
+}
+
+func (s *Server) loadDiscussionViewers(discussionID uint) []DiscussionViewerDTO {
+	var rawViewers []viewerResult
+	if err := s.db.Model(&models.DiscussionView{}).
+		Select("user_id, MAX(visited_at) as visited_at").
+		Where("discussion_id = ? AND user_id IS NOT NULL", discussionID).
+		Group("user_id").
+		Order("visited_at DESC").
+		Limit(20).
+		Scan(&rawViewers).Error; err != nil || len(rawViewers) == 0 {
+		return []DiscussionViewerDTO{}
+	}
+
+	userIDs := make([]uint, len(rawViewers))
+	for i, v := range rawViewers {
+		userIDs[i] = v.UserID
+	}
+	var users []models.User
+	s.db.Where("id IN ?", userIDs).Preload("Groups").Find(&users)
+	userMap := make(map[uint]*models.User, len(users))
+	for i := range users {
+		userMap[users[i].ID] = &users[i]
+	}
+
+	viewers := make([]DiscussionViewerDTO, 0, len(rawViewers))
+	for _, v := range rawViewers {
+		if targetUser, ok := userMap[v.UserID]; ok {
+			dto := userDTO(targetUser)
+			if dto != nil {
+				viewers = append(viewers, DiscussionViewerDTO{
+					User:      *dto,
+					VisitedAt: parseVisitedAt(v.VisitedAt),
+				})
+			}
+		}
+	}
+	return viewers
 }
 
 func (s *Server) createDiscussion(c *gin.Context) {
