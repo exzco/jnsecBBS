@@ -17,6 +17,8 @@ func DecodeContent(content string) string {
 	if strings.HasPrefix(content, "<r>") || strings.HasPrefix(content, "<t>") {
 		decoder := xml.NewDecoder(strings.NewReader(content))
 		var source strings.Builder
+		pendingBR := false
+		pendingQuoteBreak := false
 		for {
 			token, err := decoder.Token()
 			if err == io.EOF {
@@ -25,8 +27,33 @@ func DecodeContent(content string) string {
 			if err != nil {
 				return content
 			}
-			if text, ok := token.(xml.CharData); ok {
-				source.Write(text)
+			switch tok := token.(type) {
+			case xml.StartElement:
+				if tok.Name.Local == "br" {
+					pendingBR = true
+				}
+			case xml.EndElement:
+				if tok.Name.Local == "QUOTE" {
+					pendingQuoteBreak = true
+				}
+			case xml.CharData:
+				if pendingBR {
+					if !strings.HasPrefix(string(tok), "\n") && !strings.HasSuffix(source.String(), "\n") {
+						source.WriteByte('\n')
+					}
+					pendingBR = false
+				}
+				if pendingQuoteBreak {
+					if !strings.HasSuffix(source.String(), "\n\n") {
+						if strings.HasSuffix(source.String(), "\n") {
+							source.WriteByte('\n')
+						} else {
+							source.WriteString("\n\n")
+						}
+					}
+					pendingQuoteBreak = false
+				}
+				source.Write(tok)
 			}
 		}
 	}

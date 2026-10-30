@@ -48,7 +48,7 @@ func (s *Server) Handler() http.Handler {
 	} else {
 		_ = r.SetTrustedProxies(nil)
 	}
-	r.MaxMultipartMemory = 4 << 20
+	r.MaxMultipartMemory = 32 << 20
 	// Readiness must not depend on a browser session or expose database errors.
 	r.GET("/api/health", s.health)
 	r.Use(s.sessionMiddleware())
@@ -56,10 +56,27 @@ func (s *Server) Handler() http.Handler {
 	// REST API
 	api.New(s.cfg, s.db).Register(r)
 
-	// 旧 Flarum 静态资源（/assets/* 头像与附件，随导入保留可访问）
-	if s.cfg.AssetsDir != "" {
-		r.Static("/assets", s.cfg.AssetsDir)
+	// 静态资源（/assets/* 头像与附件：优先检查 DataDir/assets，回退至 AssetsDir）
+	assetsDataDir := filepath.Join(s.cfg.DataDir, "assets")
+	serveAssets := func(c *gin.Context) {
+		rel := c.Param("filepath")
+		clean := filepath.Clean("/" + rel)
+		localPath := filepath.Join(assetsDataDir, clean)
+		if st, err := os.Stat(localPath); err == nil && !st.IsDir() {
+			c.File(localPath)
+			return
+		}
+		if s.cfg.AssetsDir != "" {
+			legacyPath := filepath.Join(s.cfg.AssetsDir, clean)
+			if st, err := os.Stat(legacyPath); err == nil && !st.IsDir() {
+				c.File(legacyPath)
+				return
+			}
+		}
+		c.Status(http.StatusNotFound)
 	}
+	r.GET("/assets/*filepath", serveAssets)
+	r.HEAD("/assets/*filepath", serveAssets)
 
 	// 上传头像（磁盘目录）
 	r.Static("/avatars", filepath.Join(s.cfg.DataDir, "avatars"))

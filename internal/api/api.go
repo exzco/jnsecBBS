@@ -76,6 +76,8 @@ func (s *Server) Register(r gin.IRouter) {
 	authed.GET("/tags/:slug/discussions", s.tagDiscussions)
 	authed.GET("/post-form", s.postForm)
 	authed.POST("/preview", s.preview)
+	authed.POST("/upload", s.upload)
+	authed.GET("/fof/download/:uuid", s.downloadFile)
 	authed.GET("/search", s.search)
 	authed.GET("/users/:username", s.profile)
 	authed.GET("/users/:username/activity", s.userActivity)

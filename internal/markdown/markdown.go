@@ -38,11 +38,53 @@ func newPolicy() *bluemonday.Policy {
 	return p
 }
 
-var mentionRe = regexp.MustCompile(`@([a-zA-Z0-9_\-]{2,20})`)
+var (
+	mentionRe           = regexp.MustCompile(`@([a-zA-Z0-9_\-]{2,20})`)
+	uplImageRe          = regexp.MustCompile(`(?i)\[upl-image-preview\s+url=["']?([^"'\s\]]+)["']?\s*\]`)
+	uplFileRe           = regexp.MustCompile(`(?i)\[upl-file\s+uuid=["']?([a-zA-Z0-9\-]+)["']?(?:\s+size=["']?([^"'\s\]]+)["']?)?\s*\](.*?)\[/upl-file\]`)
+	flarumPostMentionRe = regexp.MustCompile(`@(?:"([^"]+)"|([a-zA-Z0-9_\-]{2,20}))#p?(\d+)`)
+)
+
+func transformLegacyUplTags(source string) string {
+	// 转换 [upl-image-preview url=...] 为标准 Markdown 图片语法
+	source = uplImageRe.ReplaceAllString(source, "![]($1)")
+	// 转换 [upl-file uuid=... size=...]文件名[/upl-file] 为下载链接
+	source = uplFileRe.ReplaceAllStringFunc(source, func(m string) string {
+		sub := uplFileRe.FindStringSubmatch(m)
+		if len(sub) < 4 {
+			return m
+		}
+		uuid := sub[1]
+		size := strings.TrimSpace(sub[2])
+		name := strings.TrimSpace(sub[3])
+		if name == "" {
+			name = "附件"
+		}
+		if size != "" {
+			return "[📥 " + name + " (" + size + ")](/api/fof/download/" + uuid + ")"
+		}
+		return "[📥 " + name + "](/api/fof/download/" + uuid + ")"
+	})
+	// 转换 @"用户名"#p123 或 @用户名#123 为楼层引用链接
+	source = flarumPostMentionRe.ReplaceAllStringFunc(source, func(m string) string {
+		sub := flarumPostMentionRe.FindStringSubmatch(m)
+		if len(sub) < 4 {
+			return m
+		}
+		name := sub[1]
+		if name == "" {
+			name = sub[2]
+		}
+		num := sub[3]
+		return "[@" + name + " #" + num + "](#post-" + num + ")"
+	})
+	return source
+}
 
 // Render 渲染 Markdown 并消毒。resolve 存在时把内容里的 @用户名 链接到其主页
 // （代码围栏内不处理），并返回实际命中的用户名列表（去重）。
 func Render(source string, resolve func(name string) (uint, bool)) (html string, mentions []string) {
+	source = transformLegacyUplTags(source)
 	mentioned := map[string]struct{}{}
 	if resolve != nil {
 		source = linkMentions(source, resolve, mentioned)

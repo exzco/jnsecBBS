@@ -12,6 +12,8 @@ func TestDecodeContent(t *testing.T) {
 		{"raw", "# Title\n\n**bold**", "# Title\n\n**bold**"},
 		{"invalid", "<r><p>broken", "<r><p>broken"},
 		{"entity", `<t>&lt;img src=x onerror=alert(1)&gt;</t>`, `<img src=x onerror=alert(1)>`},
+		{"quote reply", `<r><QUOTE><i>> </i><p>quote text</p></QUOTE><p>reply text</p></r>`, "> quote text\n\nreply text"},
+		{"standalone br", `<r><p>第一行<br/>第二行</p></r>`, "第一行\n第二行"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := DecodeContent(tc.stored); got != tc.source {

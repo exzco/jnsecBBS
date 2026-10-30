@@ -19,3 +19,23 @@ func TestLegacyMarkdownRendering(t *testing.T) {
 		}
 	}
 }
+
+func TestUplTagsAndMentions(t *testing.T) {
+	imgSource := `[upl-image-preview url=https://bbs.jnsec.org/assets/files/2022-04-08/1649409498-739055-image.png]`
+	html, _ := Render(imgSource, nil)
+	if !strings.Contains(html, `<img src="https://bbs.jnsec.org/assets/files/2022-04-08/1649409498-739055-image.png"`) {
+		t.Fatalf("failed to render upl-image-preview as img: %s", html)
+	}
+
+	fileSource := `[upl-file uuid=9393e74e-f7a4-46fc-93b0-1721c6ac6cfd size=712kB]malloc.pdf[/upl-file]`
+	html, _ = Render(fileSource, nil)
+	if !strings.Contains(html, `/api/fof/download/9393e74e-f7a4-46fc-93b0-1721c6ac6cfd`) || !strings.Contains(html, `malloc.pdf`) {
+		t.Fatalf("failed to render upl-file download link: %s", html)
+	}
+
+	mentionSource := `@"moyue"#p14553 关注一下`
+	html, _ = Render(mentionSource, nil)
+	if !strings.Contains(html, `<a href="#post-14553"`) || !strings.Contains(html, `@moyue #14553`) {
+		t.Fatalf("failed to render post mention link: %s", html)
+	}
+}

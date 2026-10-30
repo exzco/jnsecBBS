@@ -31,7 +31,6 @@ export function AvatarCropperModal({
   onClose,
   onConfirm,
 }: AvatarCropperModalProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
   const imageRef = useRef<HTMLImageElement>(null)
   const previewCanvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -50,29 +49,47 @@ export function AvatarCropperModal({
     initCrop: CropRect
   } | null>(null)
 
-  // 当图片加载完成时，计算图片的显示尺寸与初始居中正方形裁剪框
-  const handleImageLoad = () => {
+  // 基于图片原始宽高计算适合弹窗预览的最佳显示尺寸与居中选框
+  const initLayoutAndCrop = useCallback(() => {
     const img = imageRef.current
     if (!img) return
     const nw = img.naturalWidth
     const nh = img.naturalHeight
-    const cw = img.clientWidth
-    const ch = img.clientHeight
+    if (nw <= 0 || nh <= 0) return
+
+    const maxW = 360
+    const maxH = 280
+    const scale = Math.min(maxW / nw, maxH / nh, 1)
+    const w = Math.max(60, Math.round(nw * scale))
+    const h = Math.max(60, Math.round(nh * scale))
 
     setImgLayout({
-      width: cw,
-      height: ch,
+      width: w,
+      height: h,
       naturalWidth: nw,
       naturalHeight: nh,
     })
 
-    const initialSize = Math.max(40, Math.floor(Math.min(cw, ch) * 0.8))
+    const initialSize = Math.max(40, Math.floor(Math.min(w, h) * 0.8))
     setCrop({
-      x: Math.floor((cw - initialSize) / 2),
-      y: Math.floor((ch - initialSize) / 2),
+      x: Math.floor((w - initialSize) / 2),
+      y: Math.floor((h - initialSize) / 2),
       size: initialSize,
     })
-  }
+  }, [])
+
+  // 弹窗打开或图片变更时触发尺寸初始化
+  useEffect(() => {
+    if (!open) {
+      setImgLayout(null)
+      setDragMode(null)
+      return
+    }
+    const img = imageRef.current
+    if (img && img.complete && img.naturalWidth > 0) {
+      initLayoutAndCrop()
+    }
+  }, [open, imageSrc, initLayoutAndCrop])
 
   // 重置回居中默认选框
   const handleReset = () => {
@@ -112,7 +129,6 @@ export function AvatarCropperModal({
   ) => {
     e.preventDefault()
     e.stopPropagation()
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
     setDragMode(mode)
     dragStartRef.current = {
       pointerX: e.clientX,
@@ -121,72 +137,77 @@ export function AvatarCropperModal({
     }
   }
 
-  // 拖拽中处理
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!dragMode || !dragStartRef.current || !imgLayout) return
-    const { pointerX, pointerY, initCrop } = dragStartRef.current
-    const dx = e.clientX - pointerX
-    const dy = e.clientY - pointerY
-    const minSize = 40
-    const maxSize = Math.min(imgLayout.width, imgLayout.height)
+  // 全局 Pointer 移动与释放监听，避免边缘丢帧与拖拽卡死
+  useEffect(() => {
+    if (!dragMode || !imgLayout) return
 
-    if (dragMode === "move") {
-      let nextX = initCrop.x + dx
-      let nextY = initCrop.y + dy
-      nextX = Math.max(0, Math.min(nextX, imgLayout.width - initCrop.size))
-      nextY = Math.max(0, Math.min(nextY, imgLayout.height - initCrop.size))
-      setCrop({ x: Math.round(nextX), y: Math.round(nextY), size: initCrop.size })
-      return
-    }
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!dragStartRef.current || !imgLayout) return
+      const { pointerX, pointerY, initCrop } = dragStartRef.current
+      const dx = e.clientX - pointerX
+      const dy = e.clientY - pointerY
+      const minSize = 40
+      const maxSize = Math.min(imgLayout.width, imgLayout.height)
 
-    // 边角拖拽调整大小并维持正方形比例 (1:1)
-    let newSize = initCrop.size
-    let nextX = initCrop.x
-    let nextY = initCrop.y
-
-    if (dragMode === "se") {
-      const delta = Math.max(dx, dy)
-      newSize = Math.max(minSize, Math.min(maxSize, initCrop.size + delta))
-      newSize = Math.min(newSize, imgLayout.width - initCrop.x, imgLayout.height - initCrop.y)
-    } else if (dragMode === "nw") {
-      const delta = Math.max(-dx, -dy)
-      newSize = Math.max(minSize, Math.min(maxSize, initCrop.size + delta))
-      newSize = Math.min(newSize, initCrop.x + initCrop.size, initCrop.y + initCrop.size)
-      nextX = initCrop.x + (initCrop.size - newSize)
-      nextY = initCrop.y + (initCrop.size - newSize)
-    } else if (dragMode === "ne") {
-      const delta = Math.max(dx, -dy)
-      newSize = Math.max(minSize, Math.min(maxSize, initCrop.size + delta))
-      newSize = Math.min(newSize, imgLayout.width - initCrop.x, initCrop.y + initCrop.size)
-      nextY = initCrop.y + (initCrop.size - newSize)
-    } else if (dragMode === "sw") {
-      const delta = Math.max(-dx, dy)
-      newSize = Math.max(minSize, Math.min(maxSize, initCrop.size + delta))
-      newSize = Math.min(newSize, initCrop.x + initCrop.size, imgLayout.height - initCrop.y)
-      nextX = initCrop.x + (initCrop.size - newSize)
-    }
-
-    setCrop({
-      x: Math.round(Math.max(0, nextX)),
-      y: Math.round(Math.max(0, nextY)),
-      size: Math.round(newSize),
-    })
-  }
-
-  // 结束拖拽
-  const handlePointerUp = (e: React.PointerEvent) => {
-    if (dragMode) {
-      try {
-        ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
-      } catch {
-        // ignore
+      if (dragMode === "move") {
+        let nextX = initCrop.x + dx
+        let nextY = initCrop.y + dy
+        nextX = Math.max(0, Math.min(nextX, imgLayout.width - initCrop.size))
+        nextY = Math.max(0, Math.min(nextY, imgLayout.height - initCrop.size))
+        setCrop({ x: Math.round(nextX), y: Math.round(nextY), size: initCrop.size })
+        return
       }
+
+      // 维持 1:1 正方形比例拉伸
+      let newSize = initCrop.size
+      let nextX = initCrop.x
+      let nextY = initCrop.y
+
+      if (dragMode === "se") {
+        const delta = Math.max(dx, dy)
+        newSize = Math.max(minSize, Math.min(maxSize, initCrop.size + delta))
+        newSize = Math.min(newSize, imgLayout.width - initCrop.x, imgLayout.height - initCrop.y)
+      } else if (dragMode === "nw") {
+        const delta = Math.max(-dx, -dy)
+        newSize = Math.max(minSize, Math.min(maxSize, initCrop.size + delta))
+        newSize = Math.min(newSize, initCrop.x + initCrop.size, initCrop.y + initCrop.size)
+        nextX = initCrop.x + (initCrop.size - newSize)
+        nextY = initCrop.y + (initCrop.size - newSize)
+      } else if (dragMode === "ne") {
+        const delta = Math.max(dx, -dy)
+        newSize = Math.max(minSize, Math.min(maxSize, initCrop.size + delta))
+        newSize = Math.min(newSize, imgLayout.width - initCrop.x, initCrop.y + initCrop.size)
+        nextY = initCrop.y + (initCrop.size - newSize)
+      } else if (dragMode === "sw") {
+        const delta = Math.max(-dx, dy)
+        newSize = Math.max(minSize, Math.min(maxSize, initCrop.size + delta))
+        newSize = Math.min(newSize, initCrop.x + initCrop.size, imgLayout.height - initCrop.y)
+        nextX = initCrop.x + (initCrop.size - newSize)
+      }
+
+      setCrop({
+        x: Math.round(Math.max(0, nextX)),
+        y: Math.round(Math.max(0, nextY)),
+        size: Math.round(newSize),
+      })
+    }
+
+    const handlePointerUp = () => {
       setDragMode(null)
       dragStartRef.current = null
     }
-  }
 
-  // 实时更新右侧/下方圆形预览画布
+    window.addEventListener("pointermove", handlePointerMove)
+    window.addEventListener("pointerup", handlePointerUp)
+    window.addEventListener("pointercancel", handlePointerUp)
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove)
+      window.removeEventListener("pointerup", handlePointerUp)
+      window.removeEventListener("pointercancel", handlePointerUp)
+    }
+  }, [dragMode, imgLayout])
+
+  // 实时更新圆形与方形预览画布
   const updatePreview = useCallback(() => {
     const canvas = previewCanvasRef.current
     const img = imageRef.current
@@ -207,8 +228,6 @@ export function AvatarCropperModal({
     canvas.width = 160
     canvas.height = 160
     ctx.clearRect(0, 0, 160, 160)
-
-    // 绘制高清抗锯齿裁切图片
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = "high"
     ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, 160, 160)
@@ -267,7 +286,7 @@ export function AvatarCropperModal({
         <DialogHeader>
           <DialogTitle className="text-lg font-bold">裁剪头像</DialogTitle>
           <DialogDescription className="text-xs sm:text-sm text-muted-foreground">
-            拖动或拉伸高亮框选择头像区域，支持通过滑块微调大小。
+            拖动高亮框或调节四角滑块选择头像范围，支持通过滑块微调大小。
           </DialogDescription>
         </DialogHeader>
 
@@ -275,121 +294,122 @@ export function AvatarCropperModal({
           {/* 左侧主裁剪区 */}
           <div className="flex-1 w-full flex flex-col items-center">
             <div
-              ref={containerRef}
-              className="relative select-none overflow-hidden rounded-lg border border-border bg-black/90 shadow-inner flex items-center justify-center"
-              style={{
-                width: "100%",
-                maxWidth: "380px",
-                height: "300px",
-                touchAction: "none",
-              }}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onPointerCancel={handlePointerUp}
+              className="relative select-none overflow-hidden rounded-lg border border-border bg-black/95 shadow-inner flex items-center justify-center w-full max-w-[380px] h-[300px]"
+              style={{ touchAction: "none" }}
             >
-              {imageSrc && (
-                <img
-                  ref={imageRef}
-                  src={imageSrc}
-                  alt="待裁剪头像"
-                  crossOrigin="anonymous"
-                  onLoad={handleImageLoad}
-                  className="max-h-[300px] max-w-[380px] object-contain pointer-events-none"
-                />
-              )}
-
-              {/* 裁剪交互遮罩与选框 */}
-              {imgLayout && (
+              {imgLayout ? (
                 <div
-                  className="absolute pointer-events-none"
+                  className="relative select-none"
                   style={{
                     width: imgLayout.width,
                     height: imgLayout.height,
                   }}
                 >
-                  {/* 四周暗色遮罩 */}
-                  {/* Top */}
-                  <div
-                    className="absolute left-0 top-0 w-full bg-black/55 backdrop-blur-[0.5px]"
-                    style={{ height: crop.y }}
-                  />
-                  {/* Bottom */}
-                  <div
-                    className="absolute left-0 w-full bg-black/55 backdrop-blur-[0.5px]"
+                  <img
+                    ref={imageRef}
+                    src={imageSrc ?? undefined}
+                    alt="待裁剪头像"
+                    onLoad={initLayoutAndCrop}
                     style={{
-                      top: crop.y + crop.size,
-                      bottom: 0,
+                      width: imgLayout.width,
+                      height: imgLayout.height,
+                      display: "block",
                     }}
-                  />
-                  {/* Left */}
-                  <div
-                    className="absolute left-0 bg-black/55 backdrop-blur-[0.5px]"
-                    style={{
-                      top: crop.y,
-                      height: crop.size,
-                      width: crop.x,
-                    }}
-                  />
-                  {/* Right */}
-                  <div
-                    className="absolute right-0 bg-black/55 backdrop-blur-[0.5px]"
-                    style={{
-                      top: crop.y,
-                      height: crop.size,
-                      left: crop.x + crop.size,
-                    }}
+                    className="pointer-events-none select-none"
+                    draggable={false}
                   />
 
-                  {/* 选框本身：可拖拽移动 */}
-                  <div
-                    className="absolute pointer-events-auto cursor-move border-2 border-white/95 shadow-[0_0_0_1px_rgba(0,0,0,0.5),0_0_20px_rgba(0,0,0,0.4)]"
-                    style={{
-                      left: crop.x,
-                      top: crop.y,
-                      width: crop.size,
-                      height: crop.size,
-                    }}
-                    onPointerDown={(e) => startDrag("move", e)}
-                  >
-                    {/* 九宫格参考虚线 */}
-                    <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 pointer-events-none opacity-40">
-                      <div className="border-r border-b border-dashed border-white/80" />
-                      <div className="border-r border-b border-dashed border-white/80" />
-                      <div className="border-b border-dashed border-white/80" />
-                      <div className="border-r border-b border-dashed border-white/80" />
-                      <div className="border-r border-b border-dashed border-white/80" />
-                      <div className="border-b border-dashed border-white/80" />
-                      <div className="border-r border-dashed border-white/80" />
-                      <div className="border-r border-dashed border-white/80" />
-                      <div />
+                  {/* 裁剪交互遮罩与选框 */}
+                  <div className="absolute inset-0 pointer-events-none">
+                    {/* 四周暗色遮罩 */}
+                    <div
+                      className="absolute left-0 top-0 w-full bg-black/60 pointer-events-none"
+                      style={{ height: crop.y }}
+                    />
+                    <div
+                      className="absolute left-0 w-full bg-black/60 pointer-events-none"
+                      style={{
+                        top: crop.y + crop.size,
+                        bottom: 0,
+                      }}
+                    />
+                    <div
+                      className="absolute left-0 bg-black/60 pointer-events-none"
+                      style={{
+                        top: crop.y,
+                        height: crop.size,
+                        width: crop.x,
+                      }}
+                    />
+                    <div
+                      className="absolute right-0 bg-black/60 pointer-events-none"
+                      style={{
+                        top: crop.y,
+                        height: crop.size,
+                        left: crop.x + crop.size,
+                      }}
+                    />
+
+                    {/* 选框本身：可拖拽移动 */}
+                    <div
+                      className="absolute pointer-events-auto cursor-move border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,0.5),0_0_15px_rgba(0,0,0,0.5)]"
+                      style={{
+                        left: crop.x,
+                        top: crop.y,
+                        width: crop.size,
+                        height: crop.size,
+                        touchAction: "none",
+                      }}
+                      onPointerDown={(e) => startDrag("move", e)}
+                    >
+                      {/* 九宫格参考线 */}
+                      <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 pointer-events-none opacity-40">
+                        <div className="border-r border-b border-dashed border-white" />
+                        <div className="border-r border-b border-dashed border-white" />
+                        <div className="border-b border-dashed border-white" />
+                        <div className="border-r border-b border-dashed border-white" />
+                        <div className="border-r border-b border-dashed border-white" />
+                        <div className="border-b border-dashed border-white" />
+                        <div className="border-r border-dashed border-white" />
+                        <div className="border-r border-dashed border-white" />
+                        <div />
+                      </div>
+
+                      {/* 圆形虚线提示 */}
+                      <div className="absolute inset-0 rounded-full border border-dashed border-primary pointer-events-none" />
+
+                      {/* 四角缩放把手 */}
+                      <div
+                        className="absolute -top-2 -left-2 size-4 rounded-xs bg-white border-2 border-primary cursor-nwse-resize shadow-md"
+                        style={{ touchAction: "none" }}
+                        onPointerDown={(e) => startDrag("nw", e)}
+                      />
+                      <div
+                        className="absolute -top-2 -right-2 size-4 rounded-xs bg-white border-2 border-primary cursor-nesw-resize shadow-md"
+                        style={{ touchAction: "none" }}
+                        onPointerDown={(e) => startDrag("ne", e)}
+                      />
+                      <div
+                        className="absolute -bottom-2 -left-2 size-4 rounded-xs bg-white border-2 border-primary cursor-nesw-resize shadow-md"
+                        style={{ touchAction: "none" }}
+                        onPointerDown={(e) => startDrag("sw", e)}
+                      />
+                      <div
+                        className="absolute -bottom-2 -right-2 size-4 rounded-xs bg-white border-2 border-primary cursor-nwse-resize shadow-md"
+                        style={{ touchAction: "none" }}
+                        onPointerDown={(e) => startDrag("se", e)}
+                      />
                     </div>
-
-                    {/* 圆形虚线提示（指示实际圆形头像裁切边界） */}
-                    <div className="absolute inset-0 rounded-full border border-dashed border-primary/90 pointer-events-none" />
-
-                    {/* 四角缩放把手 */}
-                    {/* 左上角 */}
-                    <div
-                      className="absolute -top-1.5 -left-1.5 size-3.5 rounded-xs bg-white border-2 border-primary cursor-nwse-resize shadow-md"
-                      onPointerDown={(e) => startDrag("nw", e)}
-                    />
-                    {/* 右上角 */}
-                    <div
-                      className="absolute -top-1.5 -right-1.5 size-3.5 rounded-xs bg-white border-2 border-primary cursor-nesw-resize shadow-md"
-                      onPointerDown={(e) => startDrag("ne", e)}
-                    />
-                    {/* 左下角 */}
-                    <div
-                      className="absolute -bottom-1.5 -left-1.5 size-3.5 rounded-xs bg-white border-2 border-primary cursor-nesw-resize shadow-md"
-                      onPointerDown={(e) => startDrag("sw", e)}
-                    />
-                    {/* 右下角 */}
-                    <div
-                      className="absolute -bottom-1.5 -right-1.5 size-3.5 rounded-xs bg-white border-2 border-primary cursor-nwse-resize shadow-md"
-                      onPointerDown={(e) => startDrag("se", e)}
-                    />
                   </div>
                 </div>
+              ) : (
+                <img
+                  ref={imageRef}
+                  src={imageSrc ?? undefined}
+                  alt="待裁剪头像"
+                  onLoad={initLayoutAndCrop}
+                  className="max-h-[280px] max-w-[360px] object-contain opacity-0 pointer-events-none"
+                />
               )}
             </div>
 
@@ -420,7 +440,7 @@ export function AvatarCropperModal({
             </div>
           </div>
 
-          {/* 右侧实时效果预览（桌面端并排，移动端横排） */}
+          {/* 右侧实时效果预览 */}
           <div className="flex md:flex-col items-center justify-center gap-5 rounded-lg border border-border/60 bg-muted/30 p-4 w-full md:w-44 shrink-0">
             <div className="text-center">
               <p className="text-xs font-medium text-muted-foreground mb-2">圆形预览</p>

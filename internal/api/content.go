@@ -1,8 +1,11 @@
 package api
 
 import (
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/exzco/bbs/internal/markdown"
 	"github.com/exzco/bbs/internal/models"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -1127,4 +1131,148 @@ func (s *Server) search(c *gin.Context) {
 		data["posts"] = rows
 	}
 	c.JSON(http.StatusOK, data)
+}
+
+// UploadFile 与 flarum_fof_upload_files 兼容的文件记录模型
+type UploadFile struct {
+	ID           uint      `gorm:"column:id;primaryKey"`
+	ActorID      uint      `gorm:"column:actor_id"`
+	BaseName     string    `gorm:"column:base_name"`
+	Path         string    `gorm:"column:path"`
+	URL          string    `gorm:"column:url"`
+	Type         string    `gorm:"column:type"`
+	Size         int64     `gorm:"column:size"`
+	UploadMethod string    `gorm:"column:upload_method"`
+	CreatedAt    time.Time `gorm:"column:created_at"`
+	UUID         string    `gorm:"column:uuid"`
+	Tag          string    `gorm:"column:tag"`
+}
+
+func (UploadFile) TableName() string { return "flarum_fof_upload_files" }
+
+// upload 处理论坛图片与附件上传
+func (s *Server) upload(c *gin.Context) {
+	if s.cfg.ReadOnly {
+		fail(c, http.StatusForbidden, "只读模式，暂不能上传文件。")
+		return
+	}
+	u := s.currentUser(c)
+	if u == nil {
+		fail(c, http.StatusUnauthorized, "请先登录。")
+		return
+	}
+	fh, err := c.FormFile("file")
+	if err != nil {
+		fail(c, http.StatusBadRequest, "请选择要上传的文件。")
+		return
+	}
+	if fh.Size > 25<<20 {
+		fail(c, http.StatusBadRequest, "文件大小不能超过 25MB。")
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(fh.Filename))
+	blocked := map[string]bool{
+		".exe": true, ".bat": true, ".cmd": true, ".sh": true,
+		".php": true, ".phtml": true, ".jsp": true, ".asp": true,
+		".aspx": true, ".cgi": true, ".py": true, ".pl": true,
+	}
+	if blocked[ext] {
+		fail(c, http.StatusBadRequest, "出于安全原因，禁止上传可执行或脚本文件。")
+		return
+	}
+
+	dateDir := time.Now().Format("2006-01-02")
+	destDir := filepath.Join(s.cfg.DataDir, "assets", "files", dateDir)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		fail(c, http.StatusInternalServerError, "创建存储目录失败。")
+		return
+	}
+	hexPart, _ := randHex(6)
+	savedName := fmt.Sprintf("%d-%s%s", time.Now().Unix(), hexPart, ext)
+	diskPath := filepath.Join(destDir, savedName)
+	if err := c.SaveUploadedFile(fh, diskPath); err != nil {
+		fail(c, http.StatusInternalServerError, "保存文件失败。")
+		return
+	}
+
+	relPath := dateDir + "/" + savedName
+	publicURL := "/assets/files/" + relPath
+	fileUUID := uuid.New().String()
+
+	isImage := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" || ext == ".webp" || ext == ".svg" || ext == ".bmp"
+	tag := "file"
+	if isImage {
+		tag = "image-preview"
+	}
+
+	rec := UploadFile{
+		ActorID:      u.ID,
+		BaseName:     fh.Filename,
+		Path:         relPath,
+		URL:          publicURL,
+		Type:         fh.Header.Get("Content-Type"),
+		Size:         fh.Size,
+		UploadMethod: "local",
+		CreatedAt:    time.Now(),
+		UUID:         fileUUID,
+		Tag:          tag,
+	}
+	_ = s.db.Create(&rec)
+
+	var md string
+	if isImage {
+		md = fmt.Sprintf("![%s](%s)", fh.Filename, publicURL)
+	} else {
+		md = fmt.Sprintf("[📎 %s (%s)](%s)", fh.Filename, formatBytes(fh.Size), publicURL)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"url":      publicURL,
+		"uuid":     fileUUID,
+		"name":     fh.Filename,
+		"size":     fh.Size,
+		"isImage":  isImage,
+		"markdown": md,
+	})
+}
+
+// downloadFile 兼容 Flarum fof/upload 的 UUID 附件下载
+func (s *Server) downloadFile(c *gin.Context) {
+	uuidParam := c.Param("uuid")
+	var rec UploadFile
+	if err := s.db.Where("uuid = ?", uuidParam).First(&rec).Error; err != nil {
+		fail(c, http.StatusNotFound, "文件不存在。")
+		return
+	}
+	cleanRel := filepath.Clean("/" + rec.Path)
+	// 优先从 DataDir/assets/files/ 读取
+	primaryPath := filepath.Join(s.cfg.DataDir, "assets", "files", cleanRel)
+	if st, err := os.Stat(primaryPath); err == nil && !st.IsDir() {
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", rec.BaseName))
+		c.File(primaryPath)
+		return
+	}
+	// 回退至 AssetsDir/files/
+	if s.cfg.AssetsDir != "" {
+		fallbackPath := filepath.Join(s.cfg.AssetsDir, "files", cleanRel)
+		if st, err := os.Stat(fallbackPath); err == nil && !st.IsDir() {
+			c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", rec.BaseName))
+			c.File(fallbackPath)
+			return
+		}
+	}
+	fail(c, http.StatusNotFound, "文件未找到。")
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }

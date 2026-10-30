@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router"
 import {
-  ChevronLeft, Flag, Heart, Lock, Pencil, Pin, Tag as TagIcon, Trash2,
+  ChevronLeft, Flag, Heart, Lock, Pencil, Pin, Reply, Tag as TagIcon, Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useSession } from "@/lib/session"
@@ -98,6 +98,8 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
     }
   }, [data, idSlug, navigate, params, syncUrl])
 
+  const [replyContent, setReplyContent] = useState("")
+
   const reply = useMutation({
     mutationFn: (content: string) =>
       api<{ postId: number; number: number; page: number }>(`/api/discussions/${id}/reply`, {
@@ -105,6 +107,7 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
       }),
     onSuccess: (r) => {
       toast.success("回复成功")
+      setReplyContent("")
       void qc.invalidateQueries({ queryKey: ["discussion", id] })
       void qc.invalidateQueries({ queryKey: ["me"] })
       goPage(r.page)
@@ -114,6 +117,13 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
     },
     onError: (e) => toast.error((e as Error).message),
   })
+
+  const handleReplyTo = (p: Post) => {
+    const author = p.author?.username ?? "用户"
+    const quote = `@${author} #${p.number} `
+    setReplyContent((cur) => (cur ? `${cur}\n${quote}` : quote))
+    document.getElementById("reply-form")?.scrollIntoView({ behavior: "smooth" })
+  }
 
   const mod = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -175,15 +185,20 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
 
       <section className="flex flex-col">
         {data.posts.map((p) => (
-          <PostItem key={p.id} p={p} />
+          <PostItem key={p.id} p={p} canReply={data.canReply} onReplyTo={handleReplyTo} />
         ))}
       </section>
 
       <Pagination page={data.page} onPage={goPage} />
 
       {data.canReply ? (
-        <div className="mt-2 rounded-xl bg-muted/40 p-4">
-          <ReplyForm onSubmit={(v) => reply.mutate(v)} submitting={reply.isPending} />
+        <div id="reply-form" className="mt-2 rounded-xl bg-muted/40 p-4">
+          <ReplyForm
+            value={replyContent}
+            onChange={setReplyContent}
+            onSubmit={(v) => reply.mutate(v)}
+            submitting={reply.isPending}
+          />
         </div>
       ) : (
         <p className="py-6 text-center text-sm text-muted-foreground">
@@ -260,7 +275,15 @@ function ModBar({
   )
 }
 
-function PostItem({ p }: { p: Post }) {
+function PostItem({
+  p,
+  canReply,
+  onReplyTo,
+}: {
+  p: Post
+  canReply?: boolean
+  onReplyTo?: (p: Post) => void
+}) {
   const { data: session } = useSession()
   const [params, setParams] = useSearchParams()
   const [editing, setEditing] = useState(params.get("edit") === String(p.id))
@@ -317,6 +340,15 @@ function PostItem({ p }: { p: Post }) {
       )}
 
       <footer className="mt-3 flex items-center gap-3 text-sm">
+        {canReply && (
+          <button
+            type="button"
+            onClick={() => onReplyTo?.(p)}
+            className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary"
+          >
+            <Reply className="size-3.5" /> 回复
+          </button>
+        )}
         {p.canEdit && !editing && (
           <button type="button" onClick={() => setEditing(true)} className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary">
             <Pencil className="size-3.5" /> 编辑
@@ -344,22 +376,36 @@ function PostItem({ p }: { p: Post }) {
   )
 }
 
-function ReplyForm({ onSubmit, submitting }: { onSubmit: (v: string) => void; submitting: boolean }) {
-  const [content, setContent] = useState("")
+function ReplyForm({
+  value,
+  onChange,
+  onSubmit,
+  submitting,
+}: {
+  value: string
+  onChange: (v: string) => void
+  onSubmit: (v: string) => void
+  submitting: boolean
+}) {
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault()
-        if (content.trim()) {
-          onSubmit(content)
-          setContent("")
+        if (value.trim()) {
+          onSubmit(value)
+          onChange("")
         }
       }}
     >
-      <MarkdownEditor value={content} onChange={setContent} rows={5} placeholder="发表回复…（支持 Markdown，@用户名 可提醒对方）" />
+      <MarkdownEditor
+        value={value}
+        onChange={onChange}
+        rows={5}
+        placeholder="发表回复…（支持 Markdown 与 LaTeX，@用户名 可提醒对方）"
+      />
       <div className="mt-3 flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">支持 Markdown</span>
-        <Button type="submit" disabled={submitting || !content.trim()}>
+        <span className="text-xs text-muted-foreground">支持 Markdown 与 LaTeX ($E=mc^2$)</span>
+        <Button type="submit" disabled={submitting || !value.trim()}>
           发表回复
         </Button>
       </div>
