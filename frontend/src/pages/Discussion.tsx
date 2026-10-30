@@ -8,7 +8,7 @@ import { toast } from "sonner"
 import { useSession } from "@/lib/session"
 import { api, discussionUrl } from "@/lib/api"
 import { markDiscussionAsReadInCache } from "@/lib/readCache"
-import type { DiscussionDetail, Post } from "@/lib/types"
+import type { DiscussionDetail, Post, User } from "@/lib/types"
 import { MarkdownBody } from "@/components/MarkdownBody"
 import { MarkdownEditor } from "@/components/MarkdownEditor"
 import { Pagination } from "@/components/Pagination"
@@ -526,15 +526,84 @@ function PostItem({
   }
   const qc = useQueryClient()
   const like = useMutation({
-    mutationFn: () => api<{ liked: boolean; likeCount: number }>(`/api/posts/${p.id}/like`, { method: "POST" }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["discussion"] }),
-    onError: (e) => toast.error((e as Error).message),
+    mutationFn: () =>
+      api<{ liked: boolean; likeCount: number; likers: User[] }>(`/api/posts/${p.id}/like`, { method: "POST" }),
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: ["discussion"] })
+      const previousData = qc.getQueriesData<DiscussionDetail>({ queryKey: ["discussion"] })
+
+      const currentUser = session?.user
+      const nextLiked = !p.liked
+      const nextCount = nextLiked ? p.likeCount + 1 : Math.max(0, p.likeCount - 1)
+      const currentLikers = p.likers || []
+      let nextLikers = currentLikers
+      if (currentUser) {
+        if (nextLiked) {
+          nextLikers = [currentUser, ...currentLikers.filter((u) => u.id !== currentUser.id)]
+        } else {
+          nextLikers = currentLikers.filter((u) => u.id !== currentUser.id)
+        }
+      }
+
+      qc.setQueriesData<DiscussionDetail>({ queryKey: ["discussion"] }, (old) => {
+        if (!old) return old
+        return {
+          ...old,
+          posts: old.posts.map((item) =>
+            item.id === p.id
+              ? {
+                  ...item,
+                  liked: nextLiked,
+                  likeCount: nextCount,
+                  likers: nextLikers,
+                }
+              : item
+          ),
+        }
+      })
+
+      return { previousData }
+    },
+    onSuccess: (res) => {
+      qc.setQueriesData<DiscussionDetail>({ queryKey: ["discussion"] }, (old) => {
+        if (!old) return old
+        return {
+          ...old,
+          posts: old.posts.map((item) =>
+            item.id === p.id
+              ? {
+                  ...item,
+                  liked: res.liked,
+                  likeCount: res.likeCount,
+                  likers: res.likers,
+                }
+              : item
+          ),
+        }
+      })
+    },
+    onError: (e, _vars, context) => {
+      if (context?.previousData) {
+        for (const [key, val] of context.previousData) {
+          qc.setQueryData(key, val)
+        }
+      }
+      toast.error((e as Error).message)
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["discussion"] })
+    },
   })
   const hide = useMutation({
     mutationFn: () => api<{ hidden: boolean }>(`/api/posts/${p.id}/hide`, { method: "POST" }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["discussion"] }),
     onError: (e) => toast.error((e as Error).message),
   })
+
+  const likers = p.likers || []
+  const totalLikes = Math.max(p.likeCount || 0, likers.length)
+  const shownLikers = likers.slice(0, 8)
+  const remainingCount = totalLikes - shownLikers.length
 
   return (
     <article
@@ -597,9 +666,15 @@ function PostItem({
         )}
         <div className="inline-flex items-center gap-1.5">
           <button
-            disabled={session?.readOnly}
-            onClick={() => like.mutate()}
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-muted-foreground transition-colors hover:bg-rose-500/10 hover:text-rose-600 ${
+            disabled={session?.readOnly || like.isPending}
+            onClick={() => {
+              if (!session?.user) {
+                toast.error("请登录后点赞")
+                return
+              }
+              like.mutate()
+            }}
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-muted-foreground transition-colors hover:bg-rose-500/10 hover:text-rose-600 disabled:opacity-50 disabled:pointer-events-none cursor-pointer ${
               p.liked ? "bg-rose-500/10 font-semibold text-rose-600" : ""
             }`}
             title={p.liked ? "取消赞" : "点赞"}
@@ -607,13 +682,13 @@ function PostItem({
             <Heart className={`size-4 ${p.liked ? "fill-rose-600 text-rose-600" : ""}`} /> {p.likeCount}
           </button>
 
-          {p.likers && p.likers.length > 0 && (
+          {shownLikers.length > 0 && (
             <div className="flex items-center -space-x-1.5 pl-0.5" aria-label="点赞用户">
-              {p.likers.slice(0, 8).map((u) => (
-                <div key={u.id} className="group/liker relative inline-flex">
+              {shownLikers.map((u) => (
+                <div key={u.id} className="group/liker relative inline-flex hover:z-30">
                   <Link
                     to={`/u/${encodeURIComponent(u.username)}`}
-                    className="relative inline-block rounded-full transition-transform duration-150 hover:z-30 hover:scale-125 focus:outline-none"
+                    className="relative inline-block rounded-full transition-transform duration-150 hover:scale-125 focus:outline-none"
                   >
                     <UserAvatar
                       user={u}
@@ -627,15 +702,15 @@ function PostItem({
                   </div>
                 </div>
               ))}
-              {p.likers.length > 8 && (
-                <div className="group/liker relative inline-flex">
+              {remainingCount > 0 && (
+                <div className="group/liker relative inline-flex hover:z-30">
                   <span
                     className="relative flex size-5.5 items-center justify-center rounded-full border-2 border-background bg-muted text-[10px] font-semibold text-muted-foreground shadow-xs ring-1 ring-border/40 cursor-default"
                   >
-                    +{p.likers.length - 8}
+                    +{remainingCount}
                   </span>
                   <div className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 z-40 hidden whitespace-nowrap rounded-md bg-popover px-2 py-0.5 text-[11px] font-medium text-popover-foreground shadow-md ring-1 ring-border group-hover/liker:block">
-                    等共 {p.likers.length} 人点赞
+                    等共 {totalLikes} 人点赞
                     <div className="absolute left-1/2 -bottom-1 -translate-x-1/2 size-0 border-x-4 border-t-4 border-x-transparent border-t-popover" />
                   </div>
                 </div>

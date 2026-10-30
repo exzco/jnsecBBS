@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/exzco/bbs/internal/config"
+	"github.com/exzco/bbs/internal/db"
 	"github.com/exzco/bbs/internal/models"
+	"github.com/gin-gonic/gin"
 )
 
 func TestPostLikeBubbles(t *testing.T) {
@@ -146,5 +149,73 @@ func TestPostLikeBubbles(t *testing.T) {
 	}
 	if len(likeRes.Likers) != 1 || likeRes.Likers[0].Username != user2.Username {
 		t.Fatalf("expected remaining liker %s, got %+v", user2.Username, likeRes.Likers)
+	}
+
+	// 5. 模拟批量点赞超过 20 人，验证 Likers 最多返回 20 人且 LikeCount 准确
+	for i := 3; i <= 26; i++ {
+		extraUser := models.User{
+			Username:         fmt.Sprintf("extra_liker_%02d", i),
+			Email:            fmt.Sprintf("liker_%02d@example.org", i),
+			IsEmailConfirmed: true,
+		}
+		if err := g.Create(&extraUser).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := g.Create(&models.PostLike{
+			PostID:    post.ID,
+			UserID:    extraUser.ID,
+			CreatedAt: time.Now().Add(time.Duration(i) * time.Minute),
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 当前共有 1 (user2) + 24 (extra_liker_03..26) = 25 个赞
+	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d", disc.ID), nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	res = struct {
+		Posts []PostDTO `json:"posts"`
+	}{}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Posts[0].LikeCount != 25 {
+		t.Fatalf("expected likeCount 25, got %d", res.Posts[0].LikeCount)
+	}
+	if len(res.Posts[0].Likers) != 20 {
+		t.Fatalf("expected capped 20 likers, got %d", len(res.Posts[0].Likers))
+	}
+	// 验证倒序：最新点赞的 extra_liker_26 应排在第一位
+	if res.Posts[0].Likers[0].Username != "extra_liker_26" {
+		t.Fatalf("expected first liker to be extra_liker_26, got %s", res.Posts[0].Likers[0].Username)
+	}
+}
+
+func TestPostLikeUnauthorized(t *testing.T) {
+	g, err := db.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := g.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { sqlDB.Close() })
+	if err := db.InitializeEmpty(g); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	New(&config.Config{}, g).Register(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/posts/1/like", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 unauthorized, got %d: %s", w.Code, w.Body.String())
 	}
 }

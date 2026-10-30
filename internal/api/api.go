@@ -464,12 +464,18 @@ func (s *Server) loadLikes(posts []models.Post, viewer *models.User) map[uint]bo
 	var allLikes []models.PostLike
 	s.db.Where("post_id IN ?", ids).Order("created_at DESC, user_id DESC").Find(&allLikes)
 
+	postLikerCounts := make(map[uint]int)
+	var candidateLikes []models.PostLike
 	userIDs := make([]uint, 0, len(allLikes))
 	seenUser := make(map[uint]bool)
 	for _, l := range allLikes {
-		if !seenUser[l.UserID] {
-			seenUser[l.UserID] = true
-			userIDs = append(userIDs, l.UserID)
+		if postLikerCounts[l.PostID] < 20 {
+			postLikerCounts[l.PostID]++
+			candidateLikes = append(candidateLikes, l)
+			if !seenUser[l.UserID] {
+				seenUser[l.UserID] = true
+				userIDs = append(userIDs, l.UserID)
+			}
 		}
 	}
 
@@ -483,11 +489,9 @@ func (s *Server) loadLikes(posts []models.Post, viewer *models.User) map[uint]bo
 	}
 
 	likersMap := make(map[uint][]models.User)
-	for _, l := range allLikes {
+	for _, l := range candidateLikes {
 		if u, ok := userMap[l.UserID]; ok {
-			if len(likersMap[l.PostID]) < 20 {
-				likersMap[l.PostID] = append(likersMap[l.PostID], u)
-			}
+			likersMap[l.PostID] = append(likersMap[l.PostID], u)
 		}
 	}
 
