@@ -16,7 +16,8 @@ interface UploadResponse {
   markdown: string
 }
 
-// Markdown 编辑器：编写 + 服务端预览 + 图片/附件上传与粘贴 + LaTeX 插入
+// 编写 + 预览 + 图片/附件上传
+// 粘贴 + LaTeX 插入
 export function MarkdownEditor({
   id,
   value,
@@ -31,22 +32,13 @@ export function MarkdownEditor({
   rows?: number
 }) {
   const [tab, setTab] = useState("write")
-  const [preview, setPreview] = useState("")
   const [uploading, setUploading] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const imgInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  async function switchPreview(next: string) {
+  function switchPreview(next: string) {
     setTab(next)
-    if (next === "preview" && value.trim()) {
-      try {
-        const r = await api<{ html: string }>("/api/preview", { json: { content: value } })
-        setPreview(r.html)
-      } catch {
-        setPreview("<p>预览失败</p>")
-      }
-    }
   }
 
   // 在光标位置插入文本
@@ -74,8 +66,8 @@ export function MarkdownEditor({
 
   // 上传文件处理
   async function handleUpload(file: File) {
-    if (file.size > 25 * 1024 * 1024) {
-      toast.error("文件过大，不能超过 25MB。")
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("文件过大，不能超过 10 MB。")
       return
     }
     const fd = new FormData()
@@ -84,7 +76,7 @@ export function MarkdownEditor({
     try {
       const res = await api<UploadResponse>("/api/upload", { form: fd })
       insertAtCursor(res.markdown)
-      toast.success(`${res.isImage ? "图片" : "附件"}已上传并插入`)
+      toast.success(`${res.isImage ? "图片" : "附件"}成功上传`)
     } catch (e) {
       toast.error((e as Error).message || "上传失败，请重试。")
     } finally {
@@ -211,7 +203,7 @@ export function MarkdownEditor({
       </TabsContent>
       <TabsContent value="preview" className="mt-0">
         <div className="min-h-24 rounded-lg border bg-muted/30 p-4">
-          {value.trim() ? <MarkdownBody html={preview} /> : <p className="text-sm text-muted-foreground">暂无内容</p>}
+          {value.trim() ? <MarkdownBody content={value} /> : <p className="text-sm text-muted-foreground">暂无内容</p>}
         </div>
       </TabsContent>
     </Tabs>

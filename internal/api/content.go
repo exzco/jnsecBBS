@@ -1138,7 +1138,8 @@ func (s *Server) toggleLike(c *gin.Context) {
 	}
 	var n int64
 	s.db.Model(&models.PostLike{}).Where("post_id = ?", p.ID).Count(&n)
-	c.JSON(http.StatusOK, gin.H{"liked": liked, "likeCount": n})
+	likers := s.loadPostLikers(p.ID)
+	c.JSON(http.StatusOK, gin.H{"liked": liked, "likeCount": n, "likers": likers})
 }
 
 // ---------- 用户主页 / 搜索 ----------

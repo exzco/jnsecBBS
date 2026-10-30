@@ -59,6 +59,7 @@ export interface Post {
   html: string
   likeCount: number
   liked: boolean
+  likers?: User[]
   createdAt: string
   editedAt: string | null
   hidden: boolean

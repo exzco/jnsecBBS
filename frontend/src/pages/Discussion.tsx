@@ -567,11 +567,11 @@ function PostItem({
         <p className="text-sm text-muted-foreground">该回复已被隐藏。</p>
       ) : (
         <div data-post-body>
-          <MarkdownBody html={p.html} />
+          <MarkdownBody content={p.content} html={p.html} />
         </div>
       )}
 
-      <footer className="mt-3 flex items-center gap-3 text-sm">
+      <footer className="mt-3 flex flex-wrap items-center gap-3 text-sm">
         {canReply && (
           <button
             type="button"
@@ -595,15 +595,54 @@ function PostItem({
             <Flag className="size-3.5" /> {p.hidden ? "恢复" : "隐藏"}
           </button>
         )}
-        <button
-          disabled={session?.readOnly}
-          onClick={() => like.mutate()}
-          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-muted-foreground transition-colors hover:bg-rose-500/10 hover:text-rose-600 ${
-            p.liked ? "bg-rose-500/10 font-semibold text-rose-600" : ""
-          }`}
-        >
-          <Heart className={`size-4 ${p.liked ? "fill-rose-600" : ""}`} /> {p.likeCount}
-        </button>
+        <div className="inline-flex items-center gap-1.5">
+          <button
+            disabled={session?.readOnly}
+            onClick={() => like.mutate()}
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-muted-foreground transition-colors hover:bg-rose-500/10 hover:text-rose-600 ${
+              p.liked ? "bg-rose-500/10 font-semibold text-rose-600" : ""
+            }`}
+            title={p.liked ? "取消赞" : "点赞"}
+          >
+            <Heart className={`size-4 ${p.liked ? "fill-rose-600 text-rose-600" : ""}`} /> {p.likeCount}
+          </button>
+
+          {p.likers && p.likers.length > 0 && (
+            <div className="flex items-center -space-x-1.5 pl-0.5" aria-label="点赞用户">
+              {p.likers.slice(0, 8).map((u) => (
+                <div key={u.id} className="group/liker relative inline-flex">
+                  <Link
+                    to={`/u/${encodeURIComponent(u.username)}`}
+                    className="relative inline-block rounded-full transition-transform duration-150 hover:z-30 hover:scale-125 focus:outline-none"
+                  >
+                    <UserAvatar
+                      user={u}
+                      className="size-5.5 border-2 border-background ring-1 ring-border/40 shadow-xs"
+                    />
+                  </Link>
+                  {/* 人物浮动提示气泡 */}
+                  <div className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 z-40 hidden whitespace-nowrap rounded-md bg-popover px-2 py-0.5 text-[11px] font-medium text-popover-foreground shadow-md ring-1 ring-border group-hover/liker:block">
+                    {u.username}
+                    <div className="absolute left-1/2 -bottom-1 -translate-x-1/2 size-0 border-x-4 border-t-4 border-x-transparent border-t-popover" />
+                  </div>
+                </div>
+              ))}
+              {p.likers.length > 8 && (
+                <div className="group/liker relative inline-flex">
+                  <span
+                    className="relative flex size-5.5 items-center justify-center rounded-full border-2 border-background bg-muted text-[10px] font-semibold text-muted-foreground shadow-xs ring-1 ring-border/40 cursor-default"
+                  >
+                    +{p.likers.length - 8}
+                  </span>
+                  <div className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 z-40 hidden whitespace-nowrap rounded-md bg-popover px-2 py-0.5 text-[11px] font-medium text-popover-foreground shadow-md ring-1 ring-border group-hover/liker:block">
+                    等共 {p.likers.length} 人点赞
+                    <div className="absolute left-1/2 -bottom-1 -translate-x-1/2 size-0 border-x-4 border-t-4 border-x-transparent border-t-popover" />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </footer>
     </article>
   )

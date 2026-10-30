@@ -373,6 +373,7 @@ type PostDTO struct {
 	HTML       string     `json:"html"`    // 实时渲染（消毒后）
 	LikeCount  int        `json:"likeCount"`
 	Liked      bool       `json:"liked"`
+	Likers     []UserDTO  `json:"likers"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	EditedAt   *time.Time `json:"editedAt"`
 	Hidden     bool       `json:"hidden"`
@@ -385,10 +386,16 @@ type PostDTO struct {
 }
 
 func (s *Server) postDTO(p *models.Post, likedSet map[uint]bool, u *models.User) PostDTO {
+	likers := make([]UserDTO, 0, len(p.Likers))
+	for i := range p.Likers {
+		if d := userDTO(&p.Likers[i]); d != nil {
+			likers = append(likers, *d)
+		}
+	}
 	dto := PostDTO{
 		ID: p.ID, Number: p.PostNumber(), Author: userDTO(&p.User),
 		Content: p.Markdown(), HTML: s.renderPostHTML(p),
-		LikeCount: p.LikeCount, Liked: likedSet[p.ID],
+		LikeCount: p.LikeCount, Liked: likedSet[p.ID], Likers: likers,
 		CreatedAt: p.CreatedAt, EditedAt: p.EditedAt, Hidden: p.HiddenAt != nil,
 		CanEdit: !s.cfg.ReadOnly && auth.CanEditPost(u, p),
 		CanHide: !s.cfg.ReadOnly && u != nil && (u.IsModerator() || (p.UserID != nil && *p.UserID == u.ID)),
@@ -430,7 +437,7 @@ type PageDTO struct {
 	Total int `json:"total"`
 }
 
-// loadLikes 批量填充帖子的点赞数与当前用户是否已赞。
+// loadLikes 批量填充帖子的点赞数、点赞用户列表与当前用户是否已赞。
 func (s *Server) loadLikes(posts []models.Post, viewer *models.User) map[uint]bool {
 	liked := map[uint]bool{}
 	if len(posts) == 0 {
@@ -453,8 +460,44 @@ func (s *Server) loadLikes(posts []models.Post, viewer *models.User) map[uint]bo
 	for _, c := range counts {
 		countMap[c.PostID] = c.N
 	}
+
+	var allLikes []models.PostLike
+	s.db.Where("post_id IN ?", ids).Order("created_at DESC, user_id DESC").Find(&allLikes)
+
+	userIDs := make([]uint, 0, len(allLikes))
+	seenUser := make(map[uint]bool)
+	for _, l := range allLikes {
+		if !seenUser[l.UserID] {
+			seenUser[l.UserID] = true
+			userIDs = append(userIDs, l.UserID)
+		}
+	}
+
+	userMap := make(map[uint]models.User, len(userIDs))
+	if len(userIDs) > 0 {
+		var users []models.User
+		s.db.Where("id IN ?", userIDs).Preload("Groups").Find(&users)
+		for i := range users {
+			userMap[users[i].ID] = users[i]
+		}
+	}
+
+	likersMap := make(map[uint][]models.User)
+	for _, l := range allLikes {
+		if u, ok := userMap[l.UserID]; ok {
+			if len(likersMap[l.PostID]) < 20 {
+				likersMap[l.PostID] = append(likersMap[l.PostID], u)
+			}
+		}
+	}
+
 	for i := range posts {
 		posts[i].LikeCount = countMap[posts[i].ID]
+		if lks, ok := likersMap[posts[i].ID]; ok {
+			posts[i].Likers = lks
+		} else {
+			posts[i].Likers = []models.User{}
+		}
 	}
 	if viewer != nil {
 		var mine []models.PostLike
@@ -464,6 +507,33 @@ func (s *Server) loadLikes(posts []models.Post, viewer *models.User) map[uint]bo
 		}
 	}
 	return liked
+}
+
+// loadPostLikers 获取单帖最近点赞用户列表（用于点赞切换后即时返回）。
+func (s *Server) loadPostLikers(postID uint) []UserDTO {
+	var likes []models.PostLike
+	if err := s.db.Where("post_id = ?", postID).Order("created_at DESC, user_id DESC").Limit(20).Find(&likes).Error; err != nil || len(likes) == 0 {
+		return []UserDTO{}
+	}
+	userIDs := make([]uint, 0, len(likes))
+	for _, l := range likes {
+		userIDs = append(userIDs, l.UserID)
+	}
+	var users []models.User
+	s.db.Where("id IN ?", userIDs).Preload("Groups").Find(&users)
+	userMap := make(map[uint]*models.User, len(users))
+	for i := range users {
+		userMap[users[i].ID] = &users[i]
+	}
+	likers := make([]UserDTO, 0, len(likes))
+	for _, l := range likes {
+		if u, ok := userMap[l.UserID]; ok {
+			if dto := userDTO(u); dto != nil {
+				likers = append(likers, *dto)
+			}
+		}
+	}
+	return likers
 }
 
 // fillTagPerms 把 flarum_group_permission 的版块权限填充到版块切片。

@@ -75,6 +75,7 @@ type Post struct {
 	IsPrivate    bool        `gorm:"column:is_private"`
 	IsApproved   bool        `gorm:"column:is_approved"`
 	LikeCount    int         `gorm:"-"` // 实时 COUNT（flarum_post_likes），不落库
+	Likers       []User      `gorm:"-"` // 实时最近点赞用户列表
 	Discussion   *Discussion `gorm:"foreignKey:DiscussionID"`
 }
 
