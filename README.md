@@ -44,6 +44,7 @@ jnsecBBS/
 ├── Dockerfile             # 多阶段构建文件 (Node/npm 构建前端 -> Go 编译静态二进制 -> Alpine 运行)
 └── docker-compose.yaml    # 生产容器编排文件
 ```
+a
 
 ### 核心处理链路
 ```mermaid
