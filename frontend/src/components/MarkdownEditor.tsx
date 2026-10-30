@@ -18,11 +18,13 @@ interface UploadResponse {
 
 // Markdown 编辑器：编写 + 服务端预览 + 图片/附件上传与粘贴 + LaTeX 插入
 export function MarkdownEditor({
+  id,
   value,
   onChange,
   placeholder,
   rows = 10,
 }: {
+  id?: string
   value: string
   onChange: (v: string) => void
   placeholder?: string
@@ -195,6 +197,7 @@ export function MarkdownEditor({
 
       <TabsContent value="write" className="mt-0">
         <Textarea
+          id={id}
           ref={textareaRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}

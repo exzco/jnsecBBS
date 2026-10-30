@@ -38,4 +38,10 @@ func TestUplTagsAndMentions(t *testing.T) {
 	if !strings.Contains(html, `<a href="#post-14553"`) || !strings.Contains(html, `@moyue #14553`) {
 		t.Fatalf("failed to render post mention link: %s", html)
 	}
+
+	mentionWithSpace := `@admin #42 支持空格楼层引用`
+	html, _ = Render(mentionWithSpace, nil)
+	if !strings.Contains(html, `<a href="#post-42"`) || !strings.Contains(html, `@admin #42`) {
+		t.Fatalf("failed to render post mention with space: %s", html)
+	}
 }

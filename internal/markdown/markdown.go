@@ -42,7 +42,7 @@ var (
 	mentionRe           = regexp.MustCompile(`@([a-zA-Z0-9_\-]{2,20})`)
 	uplImageRe          = regexp.MustCompile(`(?i)\[upl-image-preview\s+url=["']?([^"'\s\]]+)["']?\s*\]`)
 	uplFileRe           = regexp.MustCompile(`(?i)\[upl-file\s+uuid=["']?([a-zA-Z0-9\-]+)["']?(?:\s+size=["']?([^"'\s\]]+)["']?)?\s*\](.*?)\[/upl-file\]`)
-	flarumPostMentionRe = regexp.MustCompile(`@(?:"([^"]+)"|([a-zA-Z0-9_\-]{2,20}))#p?(\d+)`)
+	flarumPostMentionRe = regexp.MustCompile(`@(?:"([^"]+)"|([a-zA-Z0-9_\-]{2,20}))\s*#p?(\d+)`)
 )
 
 func transformLegacyUplTags(source string) string {

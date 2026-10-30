@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router"
 import {
-  ChevronLeft, Flag, Heart, Lock, Pencil, Pin, Reply, Tag as TagIcon, Trash2,
+  ChevronLeft, Flag, Heart, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useSession } from "@/lib/session"
@@ -99,6 +99,118 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
   }, [data, idSlug, navigate, params, syncUrl])
 
   const [replyContent, setReplyContent] = useState("")
+  const [selectionQuote, setSelectionQuote] = useState<{
+    postId: number
+    postNumber: number
+    author: string
+    text: string
+    top: number
+    left: number
+  } | null>(null)
+
+  useEffect(() => {
+    const updateSelection = () => {
+      const selection = window.getSelection()
+      if (!selection || selection.isCollapsed || !selection.rangeCount) {
+        setSelectionQuote(null)
+        return
+      }
+
+      const text = selection.toString().trim()
+      if (!text || text.length < 2) {
+        setSelectionQuote(null)
+        return
+      }
+
+      const range = selection.getRangeAt(0)
+      const container = range.commonAncestorContainer
+      const element = (container.nodeType === Node.ELEMENT_NODE ? container : container.parentElement) as HTMLElement | null
+      if (!element) {
+        setSelectionQuote(null)
+        return
+      }
+
+      // 忽略输入框/编辑器内部的划线
+      if (element.closest("textarea, input, [contenteditable='true']")) {
+        setSelectionQuote(null)
+        return
+      }
+
+      const postArticle = element.closest("article[data-post-id]") as HTMLElement | null
+      if (!postArticle) {
+        setSelectionQuote(null)
+        return
+      }
+
+      // 确保选区在帖子正文内
+      const insideBody = element.closest("[data-post-body]") || postArticle.querySelector("[data-post-body]")?.contains(container)
+      if (!insideBody) {
+        setSelectionQuote(null)
+        return
+      }
+
+      const postId = Number(postArticle.dataset.postId)
+      const postNumber = Number(postArticle.dataset.postNumber)
+      const author = postArticle.dataset.postAuthor || ""
+      const rect = range.getBoundingClientRect()
+      if (rect.width === 0 && rect.height === 0) {
+        setSelectionQuote(null)
+        return
+      }
+
+      let top = rect.top - 42
+      if (top < 60) {
+        top = rect.bottom + 8
+      }
+      const left = Math.max(30, Math.min(window.innerWidth - 60, rect.left + rect.width / 2))
+
+      setSelectionQuote({
+        postId,
+        postNumber,
+        author,
+        text,
+        top,
+        left,
+      })
+    }
+
+    const onMouseUp = () => {
+      setTimeout(updateSelection, 10)
+    }
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Shift"].includes(e.key)) {
+        setTimeout(updateSelection, 10)
+      }
+    }
+
+    const onSelectionChange = () => {
+      const sel = window.getSelection()
+      if (!sel || sel.isCollapsed) {
+        setSelectionQuote(null)
+      }
+    }
+
+    const onScrollOrResize = () => {
+      setSelectionQuote(null)
+    }
+
+    document.addEventListener("mouseup", onMouseUp)
+    document.addEventListener("touchend", onMouseUp)
+    document.addEventListener("keyup", onKeyUp)
+    document.addEventListener("selectionchange", onSelectionChange)
+    window.addEventListener("scroll", onScrollOrResize, { passive: true })
+    window.addEventListener("resize", onScrollOrResize, { passive: true })
+
+    return () => {
+      document.removeEventListener("mouseup", onMouseUp)
+      document.removeEventListener("touchend", onMouseUp)
+      document.removeEventListener("keyup", onKeyUp)
+      document.removeEventListener("selectionchange", onSelectionChange)
+      window.removeEventListener("scroll", onScrollOrResize)
+      window.removeEventListener("resize", onScrollOrResize)
+    }
+  }, [])
 
   const reply = useMutation({
     mutationFn: (content: string) =>
@@ -118,11 +230,41 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
     onError: (e) => toast.error((e as Error).message),
   })
 
-  const handleReplyTo = (p: Post) => {
+  const handleReplyTo = (p: Post, quoteText?: string) => {
+    let textToQuote = quoteText
+    if (!textToQuote) {
+      const sel = window.getSelection()
+      if (sel && !sel.isCollapsed) {
+        const anc = sel.anchorNode?.parentElement
+        if (anc?.closest(`article[data-post-id="${p.id}"]`)) {
+          textToQuote = sel.toString().trim()
+        }
+      }
+    }
+
     const author = p.author?.username ?? "用户"
-    const quote = `@${author} #${p.number} `
-    setReplyContent((cur) => (cur ? `${cur}\n${quote}` : quote))
+    if (textToQuote && textToQuote.trim()) {
+      const clean = textToQuote.trim()
+      const lines = clean.split("\n").map((l) => `> ${l.trimEnd()}`).join("\n")
+      const quote = `> @"${author}"#p${p.number}\n${lines}\n\n`
+      setReplyContent((cur) => (cur.trim() ? `${cur.trimEnd()}\n\n${quote}` : quote))
+      window.getSelection()?.removeAllRanges()
+      setSelectionQuote(null)
+      toast.success("已添加划线引用")
+    } else {
+      const quote = `@${author} #${p.number} `
+      setReplyContent((cur) => (cur ? `${cur}\n${quote}` : quote))
+    }
+
     document.getElementById("reply-form")?.scrollIntoView({ behavior: "smooth" })
+    setTimeout(() => {
+      const ta = document.getElementById("reply-textarea") as HTMLTextAreaElement | null
+      if (ta) {
+        ta.focus()
+        const len = ta.value.length
+        ta.setSelectionRange(len, len)
+      }
+    }, 100)
   }
 
   const mod = useMutation({
@@ -205,6 +347,53 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
           {d.isLocked ? "该帖子已被锁定，无法回复。" : "登录后参与讨论。"}
         </p>
       )}
+
+      {selectionQuote && (
+        <div
+          className="fixed z-50 animate-in fade-in zoom-in-95 duration-100"
+          style={{
+            top: `${selectionQuote.top}px`,
+            left: `${selectionQuote.left}px`,
+            transform: "translateX(-50%)",
+          }}
+        >
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+            onClick={() => {
+              if (!data.canReply) {
+                toast.error(d.isLocked ? "该帖子已被锁定，无法回复" : "请登录后参与讨论")
+                return
+              }
+              const post = data.posts.find((x) => x.id === selectionQuote.postId)
+              if (post) {
+                handleReplyTo(post, selectionQuote.text)
+              } else {
+                const author = selectionQuote.author || "用户"
+                const clean = selectionQuote.text.trim()
+                const lines = clean.split("\n").map((l) => `> ${l.trimEnd()}`).join("\n")
+                const quote = `> @"${author}"#p${selectionQuote.postNumber}\n${lines}\n\n`
+                setReplyContent((cur) => (cur.trim() ? `${cur.trimEnd()}\n\n${quote}` : quote))
+                window.getSelection()?.removeAllRanges()
+                setSelectionQuote(null)
+                document.getElementById("reply-form")?.scrollIntoView({ behavior: "smooth" })
+                toast.success("已添加划线引用")
+                setTimeout(() => {
+                  const ta = document.getElementById("reply-textarea") as HTMLTextAreaElement | null
+                  ta?.focus()
+                }, 100)
+              }
+            }}
+            className="flex items-center gap-1.5 rounded-full border border-border/80 bg-popover/95 px-3 py-1.5 text-xs font-semibold text-popover-foreground shadow-lg backdrop-blur-md transition hover:bg-accent hover:text-accent-foreground active:scale-95 cursor-pointer ring-1 ring-black/5 dark:ring-white/10"
+          >
+            <Quote className="size-3.5 text-primary" />
+            <span>引用回复</span>
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -282,7 +471,7 @@ function PostItem({
 }: {
   p: Post
   canReply?: boolean
-  onReplyTo?: (p: Post) => void
+  onReplyTo?: (p: Post, quoteText?: string) => void
 }) {
   const { data: session } = useSession()
   const [params, setParams] = useSearchParams()
@@ -312,6 +501,9 @@ function PostItem({
   return (
     <article
       id={`post-${p.id}`}
+      data-post-id={p.id}
+      data-post-number={p.number}
+      data-post-author={p.author?.username ?? ""}
       className={`border-b border-border/50 px-1 py-5 last:border-b-0 ${p.hidden ? "opacity-60" : ""}`}
     >
       <header className="mb-2 flex items-center gap-2.5">
@@ -336,7 +528,9 @@ function PostItem({
       ) : p.hidden ? (
         <p className="text-sm text-muted-foreground">该回复已被隐藏。</p>
       ) : (
-        <MarkdownBody html={p.html} />
+        <div data-post-body>
+          <MarkdownBody html={p.html} />
+        </div>
       )}
 
       <footer className="mt-3 flex items-center gap-3 text-sm">
@@ -345,6 +539,7 @@ function PostItem({
             type="button"
             onClick={() => onReplyTo?.(p)}
             className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary"
+            title="回复或引用选中内容"
           >
             <Reply className="size-3.5" /> 回复
           </button>
@@ -398,13 +593,14 @@ function ReplyForm({
       }}
     >
       <MarkdownEditor
+        id="reply-textarea"
         value={value}
         onChange={onChange}
         rows={5}
-        placeholder="发表回复…（支持 Markdown 与 LaTeX，@用户名 可提醒对方）"
+        placeholder="发表回复…（支持划线快捷引用、Markdown 与 LaTeX，@用户名 可提醒对方）"
       />
       <div className="mt-3 flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">支持 Markdown 与 LaTeX ($E=mc^2$)</span>
+        <span className="text-xs text-muted-foreground">支持划线快捷引用、Markdown 与 LaTeX ($E=mc^2$)</span>
         <Button type="submit" disabled={submitting || !value.trim()}>
           发表回复
         </Button>
