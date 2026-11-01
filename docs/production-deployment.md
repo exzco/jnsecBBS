@@ -35,15 +35,13 @@ Go 辅助表由管理员备份后显式执行 `migrate-db` 建立；应用启动
 
 ## Nginx 与有限 sudo
 
-正式配置为 `/etc/nginx/jnsec-bbs-production.conf`，活动链接为：
+活动配置现已统一使用 `/etc/nginx/sites-available/bbs.jnsec.org`，软链接为：
 
 ```text
-/etc/nginx/sites-enabled/bbs.jnsec.org -> /etc/nginx/jnsec-bbs-production.conf
+/etc/nginx/sites-enabled/bbs.jnsec.org -> /etc/nginx/sites-available/bbs.jnsec.org
 ```
 
-正式域名代理到 `127.0.0.1:8080`，保留 Host、客户端地址与 Cloudflare 转发协议头。
-`run.sh` 仍会把旧模板复制到 `/etc/nginx/sites-available/bbs.jnsec.org`；该路径已不是活动配置，
-不会把正式域名切回旧 PHP 入口。维护正式路由时应修改活动配置并执行 Nginx 检查及重载。
+每次 CI/CD 部署时，`run.sh` 会将仓库中最新的 `deploy/nginx.conf` 同步至 `/etc/nginx/sites-available/bbs.jnsec.org` 并自动触发 `nginx -t` 与 `nginx -s reload`。原独立的 `/etc/nginx/jnsec-bbs-production.conf` 已废弃删除。
 
 `/etc/sudoers.d/jnsec-bbs-deploy` 只允许脚本已有的三个命令免密执行：
 
