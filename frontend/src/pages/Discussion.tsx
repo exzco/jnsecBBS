@@ -21,40 +21,32 @@ export default function DiscussionPage() {
   const { idSlug = "" } = useParams()
   const id = Number(idSlug.split("-")[0]) || 0
   const navigate = useNavigate()
-  return (
-    <div>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="-ml-2 mb-2 gap-1 text-muted-foreground hover:text-foreground"
-        onClick={() => {
-          if (window.history.length > 1) {
-            navigate(-1)
-          } else {
-            navigate("/")
-          }
-        }}
-      >
-        <ChevronLeft className="size-4" /> 返回论坛
-      </Button>
-      <DiscussionView id={id} idSlug={idSlug} syncUrl />
-    </div>
-  )
+  const handleBack = () => {
+    if (window.history.length > 1) {
+      navigate(-1)
+    } else {
+      navigate("/")
+    }
+  }
+  return <DiscussionView id={id} idSlug={idSlug} syncUrl onBack={handleBack} />
 }
 
-// 首页中栏内嵌详情：保持三栏结构，返回按钮回到列表
+// 首页中栏内嵌详情：保持三栏结构，吸顶标题栏集成返回按钮
 export function InlineDiscussion({ id, onBack }: { id: number; onBack: () => void }) {
-  return (
-    <div>
-      <Button variant="ghost" size="sm" className="-ml-2 mb-2 gap-1 text-muted-foreground" onClick={onBack}>
-        <ChevronLeft className="size-4" /> 返回列表
-      </Button>
-      <DiscussionView id={id} />
-    </div>
-  )
+  return <DiscussionView id={id} onBack={onBack} />
 }
 
-function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSlug?: string; syncUrl?: boolean }) {
+function DiscussionView({
+  id,
+  idSlug = "",
+  syncUrl = false,
+  onBack,
+}: {
+  id: number
+  idSlug?: string
+  syncUrl?: boolean
+  onBack?: () => void
+}) {
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -441,7 +433,8 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
 
   return (
     <div id="discussion-top">
-      <div className="mb-4">
+      {/* 吸顶标题栏：随着往下翻自动固定吸附在最上方，方便随时查看与修改名称 */}
+      <header className="sticky top-0 z-20 -mx-1 sm:-mx-2 px-1 sm:px-2 pt-1 pb-2.5 mb-3 bg-background/95 backdrop-blur-md border-b border-border/50 shadow-xs transition-colors">
         {isEditingTitle ? (
           <div className="rounded-xl border border-primary/40 bg-card p-3 shadow-xs animate-in fade-in-50">
             <div className="mb-2 text-xs font-semibold text-primary">修改周报 / 讨论标题</div>
@@ -473,18 +466,32 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
             </div>
           </div>
         ) : (
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
+            {onBack && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground -ml-1 cursor-pointer"
+                title="返回列表"
+                aria-label="返回列表"
+                onClick={onBack}
+              >
+                <ChevronLeft className="size-4" />
+              </Button>
+            )}
             {d.isHidden && (
-              <span className="rounded bg-red-500/10 px-2 py-0.5 text-xs font-semibold text-red-600 dark:text-red-400">
+              <span className="rounded bg-red-500/10 px-2 py-0.5 text-xs font-semibold text-red-600 dark:text-red-400 shrink-0">
                 已删除
               </span>
             )}
-            <h1 className="text-2xl font-bold">{d.title}</h1>
+            <h1 className="text-lg sm:text-2xl font-bold tracking-tight text-foreground truncate flex-1 min-w-0">
+              {d.title}
+            </h1>
             {canEditTitle && (
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 rounded-lg text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                className="size-7 shrink-0 rounded-lg text-muted-foreground hover:bg-muted hover:text-primary transition-colors cursor-pointer"
                 title="修改标题"
                 aria-label="修改标题"
                 onClick={() => {
@@ -497,25 +504,25 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
             )}
           </div>
         )}
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           {uniqueTags.map((t) => (
             <TagChip key={t.id} tag={t} />
           ))}
           <Link to={`/u/${d.author?.username ?? ""}`} className="flex items-center gap-1.5 hover:text-primary">
-            <UserAvatar user={d.author} className="size-6" />
+            <UserAvatar user={d.author} className="size-5" />
             {d.author?.username}
           </Link>
           <time>{timeAgo(d.createdAt)}</time>
           <span className="inline-flex items-center gap-1 text-xs" title={`浏览量: ${d.viewCount ?? 0} 次`}>
-            <Eye className="size-3.5" /> {d.viewCount ?? 0} 次浏览
+            <Eye className="size-3" /> {d.viewCount ?? 0} 次
           </span>
           {d.isLocked && (
             <span className="inline-flex items-center gap-1 text-xs">
-              <Lock className="size-3.5" /> 已锁定
+              <Lock className="size-3" /> 已锁定
             </span>
           )}
         </div>
-      </div>
+      </header>
 
       {data.isMod && <ModBar d={d} editorTags={data.editorTags} onAction={mod.mutate} />}
 
