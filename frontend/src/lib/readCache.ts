@@ -46,4 +46,18 @@ export function markDiscussionAsReadInCache(qc: QueryClient, discussionId: numbe
       ),
     }
   })
+
+  // 4. 同步更新左侧导航栏周报列表缓存
+  qc.setQueriesData<{ items: { id: number; hasUnread?: boolean }[] }>(
+    { queryKey: ["weekly-discussions-all"] },
+    (old) => {
+      if (!old?.items) return old
+      return {
+        ...old,
+        items: old.items.map((item) =>
+          item.id === discussionId ? { ...item, hasUnread: false } : item,
+        ),
+      }
+    },
+  )
 }

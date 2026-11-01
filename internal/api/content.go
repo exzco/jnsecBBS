@@ -506,8 +506,8 @@ func (s *Server) discussionDetail(c *gin.Context) {
 			if d.LastPostNumber != nil && *d.LastPostNumber > 0 {
 				lastPostNum = *d.LastPostNumber
 			}
-			// 若当前访问为最后一页或周报，则直接同步已读至最新楼层
-			if page >= pages && lastPostNum > maxNumber {
+			// 若当前访问为最后一页、全量加载或周报，则直接同步已读至最新楼层，杜绝隐藏楼层差导致的未读蓝点残留
+			if (page >= pages || loadAll || isWeekly) && lastPostNum > maxNumber {
 				maxNumber = lastPostNum
 			}
 			if hasRead {

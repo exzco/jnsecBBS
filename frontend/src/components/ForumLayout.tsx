@@ -29,7 +29,10 @@ function WeeklyDiscussionsList({
   openDiscussion: (id: number) => void
   currentDiscussionId: number | null
 }) {
+  const qc = useQueryClient()
   const [filter, setFilter] = useState("")
+  const [readIds, setReadIds] = useState<Set<number>>(() => new Set())
+
   const { data, isLoading } = useQuery({
     queryKey: ["weekly-discussions-all", tagSlug],
     queryFn: () =>
@@ -74,21 +77,26 @@ function WeeklyDiscussionsList({
         ) : (
           filtered.map((item) => {
             const isActive = currentDiscussionId === item.id
+            const isUnread = Boolean(item.hasUnread && !isActive && !readIds.has(item.id))
             return (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => openDiscussion(item.id)}
+                onClick={() => {
+                  setReadIds((prev) => new Set(prev).add(item.id))
+                  markDiscussionAsReadInCache(qc, item.id)
+                  openDiscussion(item.id)
+                }}
                 title={item.title}
                 className={cn(
-                  "group flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-muted/60 text-left",
+                  "group flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-muted/60 text-left cursor-pointer",
                   isActive
                     ? "bg-secondary font-semibold text-primary"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {item.hasUnread && (
-                  <span className="size-1.5 shrink-0 rounded-full bg-blue-500" />
+                {isUnread && (
+                  <span className="size-1.5 shrink-0 rounded-full bg-blue-500 animate-in fade-in" />
                 )}
                 <span className="flex-1 truncate">{item.title}</span>
                 {item.replyCount > 0 && (
