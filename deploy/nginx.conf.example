@@ -1,6 +1,6 @@
 server {
     listen 80;
-    server_name bbs.jnsec.org;
+    server_name new.bbs.jnsec.org;
     client_max_body_size 20m;
 
     location / {
@@ -12,3 +12,16 @@ server {
     }
 }
 
+server {
+    listen 80;
+    server_name bbs.jnsec.org;
+    client_max_body_size 20m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8081;   # 旧站 php
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
