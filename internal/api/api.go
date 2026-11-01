@@ -558,19 +558,6 @@ func notify(g *gorm.DB, userID, senderID uint, typ string, discussionID, postID 
 	})
 }
 
-// notifyDiscussionParticipants 通知讨论里发过言的人（含楼主）。
-func notifyDiscussionParticipants(g *gorm.DB, d *models.Discussion, senderID uint, typ string, postID uint) {
-	var ids []uint
-	g.Model(&models.Post{}).Where("discussion_id = ? AND user_id <> ?", d.ID, senderID).
-		Distinct().Limit(100).Pluck("user_id", &ids)
-	seen := map[uint]bool{}
-	for _, id := range ids {
-		if !seen[id] {
-			seen[id] = true
-			notify(g, id, senderID, typ, d.ID, postID)
-		}
-	}
-}
 
 // slugify 生成 URL slug。
 func slugify(title string) string { return slug.Make(title) }

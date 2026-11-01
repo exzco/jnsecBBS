@@ -44,4 +44,22 @@ func TestUplTagsAndMentions(t *testing.T) {
 	if !strings.Contains(html, `<a href="#post-42"`) || !strings.Contains(html, `@admin #42`) {
 		t.Fatalf("failed to render post mention with space: %s", html)
 	}
+
+	dummyResolver := func(name string) (uint, bool) {
+		if name == "moyue" || name == "admin" || name == "alice" {
+			return 1, true
+		}
+		return 0, false
+	}
+	extracted := MentionedUsernames(`> @"moyue"#p14553 关注一下
+@admin 还有 @alice 以及 @nonexistent`, dummyResolver)
+	expected := map[string]bool{"moyue": true, "admin": true, "alice": true}
+	if len(extracted) != 3 {
+		t.Fatalf("unexpected extracted count %d: %v", len(extracted), extracted)
+	}
+	for _, n := range extracted {
+		if !expected[n] {
+			t.Fatalf("unexpected extracted user: %s", n)
+		}
+	}
 }

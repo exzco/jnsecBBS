@@ -82,13 +82,13 @@ function Shell() {
     location.pathname.startsWith("/admin")
 
   return (
-    <div className="h-screen flex flex-col bg-background text-foreground overflow-hidden">
+    <div className="h-[100dvh] max-h-[100dvh] flex flex-col bg-background text-foreground overflow-hidden">
       <Navbar siteName={siteName} />
       <main
         className={cn(
-          "mx-auto w-full max-w-[1780px] px-3 sm:px-6 lg:px-8 flex-1 min-h-0",
+          "mx-auto w-full max-w-[1780px] px-2 sm:px-6 lg:px-8 flex-1 min-h-0",
           !isAuthOrAdmin
-            ? "py-3 flex flex-col overflow-hidden"
+            ? "py-2 sm:py-3 flex flex-col overflow-hidden"
             : "py-5 overflow-y-auto [scrollbar-gutter:stable]",
         )}
       >

@@ -11,7 +11,6 @@ import { markDiscussionAsReadInCache } from "@/lib/readCache"
 import type { DiscussionDetail, Post, User } from "@/lib/types"
 import { MarkdownBody } from "@/components/MarkdownBody"
 import { MarkdownEditor } from "@/components/MarkdownEditor"
-import { Pagination } from "@/components/Pagination"
 import { PostEditor } from "@/components/PostEditor"
 import { GroupBadges, TagChip, UserAvatar } from "@/components/DiscussionParts"
 import { Button } from "@/components/ui/button"
@@ -46,26 +45,13 @@ export function InlineDiscussion({ id, onBack }: { id: number; onBack: () => voi
 }
 
 function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSlug?: string; syncUrl?: boolean }) {
-  const [params, setParams] = useSearchParams()
-  const hasPage = params.has("page")
-  const requestedPage = hasPage ? Number(params.get("page")) : null
-  const page = requestedPage && Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 0
-  const goPage = (p: number) => {
-    setParams((current) => {
-      const next = new URLSearchParams(current)
-      next.set("page", String(p))
-      next.delete("edit")
-      return next
-    })
-    window.scrollTo({ top: 0, behavior: "smooth" })
-    document.getElementById("discussion-top")?.scrollIntoView({ behavior: "smooth" })
-  }
+  const [params] = useSearchParams()
   const navigate = useNavigate()
   const qc = useQueryClient()
 
   const { data, isError, error } = useQuery({
-    queryKey: ["discussion", id, page],
-    queryFn: () => api<DiscussionDetail>(`/api/discussions/${id}${page > 0 ? `?page=${page}` : ""}`),
+    queryKey: ["discussion", id],
+    queryFn: () => api<DiscussionDetail>(`/api/discussions/${id}?all=1`),
     retry: false,
   })
 
@@ -76,23 +62,23 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
     }
   }, [data, id, qc])
 
-  // 2. 首次打开帖子（未指定 page）且包含多页内容/周报时，即时渲染直达目标楼层，消除 150ms 延迟动画闪烁
+  // 2. 首次打开帖子且为周报时，即时滚动到底部最新周报楼层
   useEffect(() => {
-    if (data && !hasPage) {
+    if (data) {
       const isWeekly = data.discussion.tags.some((t) => t.name.includes("周报") || t.slug === "weekly")
-      if (isWeekly || data.page.page > 1) {
+      if (isWeekly && data.posts.length > 0) {
         const last = data.posts[data.posts.length - 1]
         if (last) {
           document.getElementById(`post-${last.id}`)?.scrollIntoView({ behavior: "instant", block: "nearest" })
         }
       }
     }
-  }, [data?.discussion.id, hasPage])
+  }, [data?.discussion.id])
 
   // 旧链接 /d/{id} 规范化为 /d/{id}-{slug}（仅整页路由）
   useEffect(() => {
     if (syncUrl && data && idSlug !== `${data.discussion.id}-${data.discussion.slug}` && data.discussion.slug) {
-      navigate(discussionUrl(data.discussion.id, data.discussion.slug) + `?${params}`, {
+      navigate(discussionUrl(data.discussion.id, data.discussion.slug) + (params.toString() ? `?${params}` : ""), {
         replace: true,
       })
     }
@@ -222,7 +208,6 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
       setReplyContent("")
       void qc.invalidateQueries({ queryKey: ["discussion", id] })
       void qc.invalidateQueries({ queryKey: ["me"] })
-      goPage(r.page)
       setTimeout(() => {
         document.getElementById(`post-${r.postId}`)?.scrollIntoView({ behavior: "smooth" })
       }, 300)
@@ -333,8 +318,6 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
           <PostItem key={p.id} p={p} canReply={data.canReply} onReplyTo={handleReplyTo} />
         ))}
       </section>
-
-      <Pagination page={data.page} onPage={goPage} />
 
       {data.viewers && data.viewers.length > 0 && (
         <div className="mt-4 mb-2 rounded-xl border border-border/70 bg-card/60 p-3.5 shadow-xs">

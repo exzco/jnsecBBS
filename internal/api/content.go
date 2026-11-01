@@ -442,33 +442,40 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	var totalComments int64
 	postQuery.Session(&gorm.Session{}).Model(&models.Post{}).Count(&totalComments)
 
+	loadAll := c.Query("all") == "1" || c.Query("all") == "true"
 	page := pageParam(c)
 	pages := paginate(int(totalComments), page, perPagePosts)
 
-	// 未传 page 参数（默认直接点开帖子）：定位到未读回复页或周报末页，避免从最旧楼层往下翻
-	if c.Query("page") == "" {
-		if hasRead && du.LastReadPostNumber != nil && *du.LastReadPostNumber > 0 {
-			lastRead := *du.LastReadPostNumber
-			lastPostNum := int(totalComments)
-			if d.LastPostNumber != nil && *d.LastPostNumber > 0 {
-				lastPostNum = *d.LastPostNumber
-			}
-			if lastRead < lastPostNum {
-				var countBefore int64
-				countQ := postQuery.Session(&gorm.Session{}).Model(&models.Post{}).Where("number <= ?", lastRead)
-				countQ.Count(&countBefore)
-				page = int(countBefore/perPagePosts) + 1
+	var posts []models.Post
+	if loadAll {
+		page = 1
+		pages = 1
+		postQuery.Session(&gorm.Session{}).Order("number ASC").Preload("User").Find(&posts)
+	} else {
+		// 未传 page 参数（默认直接点开帖子）：定位到未读回复页或周报末页，避免从最旧楼层往下翻
+		if c.Query("page") == "" {
+			if hasRead && du.LastReadPostNumber != nil && *du.LastReadPostNumber > 0 {
+				lastRead := *du.LastReadPostNumber
+				lastPostNum := int(totalComments)
+				if d.LastPostNumber != nil && *d.LastPostNumber > 0 {
+					lastPostNum = *d.LastPostNumber
+				}
+				if lastRead < lastPostNum {
+					var countBefore int64
+					countQ := postQuery.Session(&gorm.Session{}).Model(&models.Post{}).Where("number <= ?", lastRead)
+					countQ.Count(&countBefore)
+					page = int(countBefore/perPagePosts) + 1
+				} else if isWeekly && pages > 1 {
+					page = pages
+				}
 			} else if isWeekly && pages > 1 {
 				page = pages
 			}
-		} else if isWeekly && pages > 1 {
-			page = pages
 		}
-	}
 
-	var posts []models.Post
-	postQuery.Session(&gorm.Session{}).Order("number ASC").
-		Limit(perPagePosts).Offset((page - 1) * perPagePosts).Preload("User").Find(&posts)
+		postQuery.Session(&gorm.Session{}).Order("number ASC").
+			Limit(perPagePosts).Offset((page - 1) * perPagePosts).Preload("User").Find(&posts)
+	}
 
 	// 记录已读进度
 	if u != nil && len(posts) > 0 {
@@ -841,12 +848,21 @@ func (s *Server) reply(c *gin.Context) {
 				return err
 			}
 		}
+		// 1. 发送 @ 提及通知（含 @"用户名"#p123 楼层引用及普通 @用户名）
+		mentionedIDs := map[uint]bool{}
 		for _, name := range markdown.MentionedUsernames(body.Content, s.mentionResolver()) {
 			var mid uint
 			tx.Model(&models.User{}).Select("id").Where("lower(username) = lower(?)", name).Scan(&mid)
-			notify(tx, mid, u.ID, "mention", d.ID, post.ID)
+			if mid != 0 && mid != u.ID {
+				mentionedIDs[mid] = true
+				notify(tx, mid, u.ID, "mention", d.ID, post.ID)
+			}
 		}
-		notifyDiscussionParticipants(tx, &d, u.ID, "reply", post.ID)
+
+		// 2. 仅向楼主发送 reply 通知（楼主不是回帖者本人且未收到过 mention 通知；不再全量广播给历史参与者）
+		if d.UserID != nil && *d.UserID != u.ID && !mentionedIDs[*d.UserID] {
+			notify(tx, *d.UserID, u.ID, "reply", d.ID, post.ID)
+		}
 		return nil
 	})
 	if err != nil {

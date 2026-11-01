@@ -6,7 +6,6 @@ import { toast } from "sonner"
 import { api } from "@/lib/api"
 import type { AdminUserRow, Page } from "@/lib/types"
 import type { AdminMeta } from "../Admin"
-import { Pagination } from "@/components/Pagination"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -18,14 +17,13 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
   const qc = useQueryClient()
   const [q, setQ] = useState("")
   const [query, setQuery] = useState("")
-  const [page, setPage] = useState(1)
   const [sort, setSort] = useState<"asc" | "desc">("asc")
 
   const { data, isLoading } = useQuery({
-    queryKey: ["adminUsers", query, page, sort],
+    queryKey: ["adminUsers", query, sort],
     queryFn: () =>
       api<{ users: AdminUserRow[]; page: Page }>(
-        `/api/admin/users?q=${encodeURIComponent(query)}&page=${page}&sort=${sort}`,
+        `/api/admin/users?all=1&q=${encodeURIComponent(query)}&sort=${sort}`,
       ),
   })
 
@@ -37,13 +35,12 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
       const previous = qc.getQueryData<{ users: AdminUserRow[]; page: Page }>([
         "adminUsers",
         query,
-        page,
         sort,
       ])
       if (previous && (body.action === "ban" || body.action === "unban")) {
         const isBanned = body.action === "ban"
         qc.setQueryData<{ users: AdminUserRow[]; page: Page }>(
-          ["adminUsers", query, page, sort],
+          ["adminUsers", query, sort],
           {
             ...previous,
             users: previous.users.map((u) =>
@@ -56,7 +53,7 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
     },
     onError: (e, _vars, context) => {
       if (context?.previous) {
-        qc.setQueryData(["adminUsers", query, page, sort], context.previous)
+        qc.setQueryData(["adminUsers", query, sort], context.previous)
       }
       toast.error((e as Error).message)
     },
@@ -73,7 +70,6 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
         onSubmit={(e) => {
           e.preventDefault()
           setQuery(q)
-          setPage(1)
         }}
       >
         <Input
@@ -93,7 +89,6 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
                 className="w-20 cursor-pointer select-none hover:text-foreground"
                 onClick={() => {
                   setSort((prev) => (prev === "asc" ? "desc" : "asc"))
-                  setPage(1)
                 }}
                 title="点击切换升序/降序"
               >
@@ -190,14 +185,11 @@ export function UsersTab({ meta }: { meta?: AdminMeta }) {
           </TableBody>
         </Table>
       </Card>
-      {data?.page && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-2 px-1">
-          <span className="text-xs text-muted-foreground">
-            共 {data.page.total} 位用户，第 {data.page.page} / {data.page.pages} 页
-          </span>
-          <Pagination page={data.page} onPage={setPage} />
-        </div>
-      )}
+      <div className="flex items-center justify-between px-1">
+        <span className="text-xs text-muted-foreground">
+          共 {data?.users.length ?? 0} 位用户
+        </span>
+      </div>
     </div>
   )
 }

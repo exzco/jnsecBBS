@@ -104,6 +104,26 @@ func Render(source string, resolve func(name string) (uint, bool)) (html string,
 func MentionedUsernames(source string, resolve func(name string) (uint, bool)) []string {
 	seen := map[string]struct{}{}
 	var out []string
+
+	// 1. 优先提取 @"用户名"#p123 或 @用户名#123 这类楼层引用
+	for _, m := range flarumPostMentionRe.FindAllStringSubmatch(source, -1) {
+		name := m[1]
+		if name == "" {
+			name = m[2]
+		}
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		if _, ok := resolve(name); ok {
+			seen[name] = struct{}{}
+			out = append(out, name)
+		}
+	}
+
+	// 2. 提取普通 @用户名
 	for _, m := range mentionRe.FindAllStringSubmatch(source, -1) {
 		name := m[1]
 		if _, dup := seen[name]; dup {

@@ -237,16 +237,22 @@ export default function HomePage() {
         )}
 
         {main.hasNextPage && (
-          <div className="pt-4 text-center">
+          <div className="pt-4 pb-6 text-center">
             <Button
               variant="outline"
               size="lg"
               onClick={() => void main.fetchNextPage()}
               disabled={main.isFetchingNextPage}
-              className="px-8 font-medium shadow-xs"
+              className="w-full sm:w-auto px-8 font-medium shadow-xs"
             >
               {main.isFetchingNextPage ? "加载中…" : "加载更多帖子"}
             </Button>
+          </div>
+        )}
+
+        {!main.hasNextPage && mainItems.length > 0 && (
+          <div className="py-6 text-center text-xs text-muted-foreground/75">
+            已经到底了，共 {mainTotal ?? mainItems.length} 篇讨论
           </div>
         )}
       </div>

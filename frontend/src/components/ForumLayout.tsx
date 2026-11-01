@@ -318,7 +318,7 @@ export function ForumLayout() {
         <section
           ref={contentRef}
           aria-label="内容板块"
-          className="min-w-0 flex-1 h-full min-h-0 overflow-y-auto pr-2 pb-6 [scrollbar-gutter:stable]"
+          className="min-w-0 flex-1 h-full min-h-0 overflow-y-auto pr-1 sm:pr-2 pb-24 sm:pb-8 [scrollbar-gutter:stable] overscroll-contain"
         >
           <Outlet />
         </section>

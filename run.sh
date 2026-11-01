@@ -47,10 +47,49 @@ fi
 
 # 2. 同步基础配置文件与模板
 print_step "同步配置文件与环境变量模板..."
-cp config.example.yaml config.yaml
-cp .env.example .env
+if [ ! -f config.yaml ]; then
+    cp config.example.yaml config.yaml
+fi
+if [ ! -f .env ]; then
+    cp .env.example .env
+fi
 cp deploy/nginx.conf.example deploy/nginx.conf
-print_success "基础配置文件同步完成"
+print_success "基础配置文件检查完成"
+
+# 2.1 注入生产环境变量 (优先加载 /home/gha_deploy/.pam_environment)
+PAM_ENV_FILE="/home/gha_deploy/.pam_environment"
+if [ -f "$PAM_ENV_FILE" ]; then
+    print_step "检测到生产环境变量文件 (${PAM_ENV_FILE})，正在加载并同步至 .env..."
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+        var_name=$(echo "$line" | awk '{print $1}')
+        if [[ "$line" =~ OVERRIDE=\"([^\"]*)\" ]]; then
+            val="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ DEFAULT=\"([^\"]*)\" ]]; then
+            val="${BASH_REMATCH[1]}"
+        else
+            continue
+        fi
+        export "$var_name=$val"
+        if grep -q "^${var_name}=" .env 2>/dev/null; then
+            sed -i "s|^${var_name}=.*|${var_name}=${val}|" .env
+        else
+            echo "${var_name}=${val}" >> .env
+        fi
+    done < "$PAM_ENV_FILE"
+    print_success "生产环境变量已成功加载并写入 .env"
+    print_item "运行模式" "读写模式 (READ_ONLY=${READ_ONLY:-false})" "$CLR_GREEN"
+    print_item "当前库连接" "${APP_DB_DSN:-未显式设置}" "$CLR_BLUE"
+else
+    # 若无 pam_environment，确保 .env 中 READ_ONLY 为 false，库指向 flarum
+    if grep -q "^READ_ONLY=true" .env 2>/dev/null; then
+        sed -i 's/^READ_ONLY=true/READ_ONLY=false/' .env
+    fi
+    if grep -q "mysql:3306)/bbs" .env 2>/dev/null; then
+        sed -i 's|mysql:3306)/bbs|mysql:3306)/flarum|' .env
+    fi
+fi
 
 # 3. 检查并同步 Nginx 配置
 print_step "检查 Nginx 配置变动..."

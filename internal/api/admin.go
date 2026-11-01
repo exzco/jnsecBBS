@@ -187,8 +187,9 @@ func (s *Server) adminUsers(c *gin.Context) {
 	var total int64
 	base.Session(&gorm.Session{}).Count(&total)
 
+	loadAll := c.Query("all") == "1" || c.Query("all") == "true"
 	perPage := perPageUsers
-	if pp, err := strconv.Atoi(c.Query("per_page")); err == nil && pp > 0 && pp <= 100 {
+	if pp, err := strconv.Atoi(c.Query("per_page")); err == nil && pp > 0 && pp <= 1000 {
 		perPage = pp
 	}
 
@@ -205,6 +206,15 @@ func (s *Server) adminUsers(c *gin.Context) {
 
 	offset := (page - 1) * perPage
 	if offset < 0 {
+		offset = 0
+	}
+	if loadAll {
+		perPage = int(total)
+		if perPage == 0 {
+			perPage = 1
+		}
+		page = 1
+		pages = 1
 		offset = 0
 	}
 

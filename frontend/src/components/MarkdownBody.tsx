@@ -1,6 +1,7 @@
 import Markdown from "react-markdown"
 import remarkMath from "remark-math"
 import remarkGfm from "remark-gfm"
+import remarkBreaks from "remark-breaks"
 import rehypeKatex from "rehype-katex"
 import rehypeRaw from "rehype-raw"
 import "katex/dist/katex.min.css"
@@ -45,7 +46,7 @@ export function MarkdownBody({ content, html, children }: MarkdownBodyProps) {
   return (
     <div className="md-body text-[15px] leading-relaxed break-words">
       <Markdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
         rehypePlugins={[rehypeRaw, [rehypeKatex, { throwOnError: false }]]}
       >
         {processed}
