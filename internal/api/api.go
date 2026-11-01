@@ -558,7 +558,6 @@ func notify(g *gorm.DB, userID, senderID uint, typ string, discussionID, postID 
 	})
 }
 
-
 // slugify 生成 URL slug。
 func slugify(title string) string { return slug.Make(title) }
 
