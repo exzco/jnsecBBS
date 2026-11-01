@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, Outlet, useLocation, useNavigate, useSearchParams } from "react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, Compass, Layers, MessageSquare, Plus, Sparkles } from "lucide-react"
+import { ChevronDown, Compass, Layers, MessageSquare, Plus, Search, Sparkles } from "lucide-react"
 import { api } from "@/lib/api"
 import { useSession } from "@/lib/session"
 import { useHomeBoard } from "@/lib/stores"
@@ -11,6 +11,99 @@ import type { HomeCard, RecentData } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "cn"
+
+interface WeeklyDiscussionItem {
+  id: number
+  title: string
+  replyCount: number
+  hasUnread?: boolean
+  author?: { username: string }
+}
+
+function WeeklyDiscussionsList({
+  tagSlug,
+  openDiscussion,
+  currentDiscussionId,
+}: {
+  tagSlug: string
+  openDiscussion: (id: number) => void
+  currentDiscussionId: number | null
+}) {
+  const [filter, setFilter] = useState("")
+  const { data, isLoading } = useQuery({
+    queryKey: ["weekly-discussions-all", tagSlug],
+    queryFn: () =>
+      api<{ items: WeeklyDiscussionItem[] }>(
+        `/api/tags/${encodeURIComponent(tagSlug)}/discussions?all=1`,
+      ),
+    staleTime: 60_000,
+  })
+
+  if (isLoading) {
+    return (
+      <div className="ml-5 space-y-1.5 border-l border-border/50 pl-2 py-1">
+        <div className="h-4 w-3/4 rounded bg-muted/60 animate-pulse" />
+        <div className="h-4 w-2/3 rounded bg-muted/60 animate-pulse" />
+        <div className="h-4 w-4/5 rounded bg-muted/60 animate-pulse" />
+      </div>
+    )
+  }
+
+  const items = data?.items ?? []
+  const filtered = filter.trim()
+    ? items.filter((x) => x.title.toLowerCase().includes(filter.toLowerCase()))
+    : items
+
+  return (
+    <div className="ml-5 space-y-1 border-l border-border/50 pl-1.5 py-0.5 animate-in fade-in-50 duration-150 pr-1">
+      {items.length > 8 && (
+        <div className="relative mb-1">
+          <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="搜索周报/作者…"
+            className="w-full rounded-md border border-border/60 bg-muted/30 py-1 pl-6 pr-2 text-[11px] text-foreground placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none"
+          />
+        </div>
+      )}
+      <div className="max-h-72 overflow-y-auto space-y-0.5 pr-0.5">
+        {filtered.length === 0 ? (
+          <div className="py-1 text-[11px] text-muted-foreground">未找到匹配周报</div>
+        ) : (
+          filtered.map((item) => {
+            const isActive = currentDiscussionId === item.id
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => openDiscussion(item.id)}
+                title={item.title}
+                className={cn(
+                  "group flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-muted/60 text-left",
+                  isActive
+                    ? "bg-secondary font-semibold text-primary"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {item.hasUnread && (
+                  <span className="size-1.5 shrink-0 rounded-full bg-blue-500" />
+                )}
+                <span className="flex-1 truncate">{item.title}</span>
+                {item.replyCount > 0 && (
+                  <span className="text-[10px] text-muted-foreground/80 shrink-0">
+                    {item.replyCount}
+                  </span>
+                )}
+              </button>
+            )
+          })
+        )}
+      </div>
+    </div>
+  )
+}
 
 export function ForumLayout() {
   const qc = useQueryClient()
@@ -59,10 +152,14 @@ export function ForumLayout() {
   )
   const activeTop = activeCard?.tag.slug
 
-  // 路由或查询参数变化时，中栏滚动条置顶
+  // 页面级路由变化时，中栏滚动条置顶（页面内讨论展开/返回由各页面精准记忆滚动位置）
+  const prevPathRef = useRef(location.pathname)
   useEffect(() => {
-    contentRef.current?.scrollTo({ top: 0, behavior: "instant" })
-  }, [location.pathname, location.search])
+    if (prevPathRef.current !== location.pathname) {
+      prevPathRef.current = location.pathname
+      contentRef.current?.scrollTo({ top: 0, behavior: "instant" })
+    }
+  }, [location.pathname])
 
   // 当处于具体子版块时，自动展开对应父版块
   useEffect(() => {
@@ -94,7 +191,11 @@ export function ForumLayout() {
     if (location.pathname !== "/") {
       navigate(`/?d=${id}`)
     } else {
-      setSearchParams({ d: String(id) })
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev)
+        next.set("d", String(id))
+        return next
+      })
     }
   }
 
@@ -212,7 +313,10 @@ export function ForumLayout() {
                   const color = rawColor && /^#[0-9a-fA-F]{3,8}$/.test(rawColor) ? rawColor : "#00838f"
                   const isParentActive = isHome && active === c.tag.slug
                   const hasChildren = Boolean(c.children && c.children.length > 0)
+                  const isWeekly = c.tag.slug === "weekly" || c.tag.name.includes("周报")
+                  const canExpand = hasChildren || isWeekly
                   const isExpanded = expandedSlugs.has(c.tag.slug)
+                  const currentDiscussionId = Number(searchParams.get("d")) || null
 
                   return (
                     <div key={c.tag.id} className="space-y-0.5">
@@ -220,7 +324,12 @@ export function ForumLayout() {
                         {/* 大版块按钮 */}
                         <button
                           type="button"
-                          onClick={() => selectBoard(c.tag.slug)}
+                          onClick={() => {
+                            selectBoard(c.tag.slug)
+                            if (isWeekly && !isExpanded) {
+                              setExpandedSlugs((prev) => new Set(prev).add(c.tag.slug))
+                            }
+                          }}
                           className={cn(
                             "flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors hover:bg-muted/60",
                             isParentActive
@@ -240,12 +349,20 @@ export function ForumLayout() {
                           )}
                         </button>
 
-                        {/* V 展开/收起按钮：点击后展开，不点击不展开 */}
-                        {hasChildren && (
+                        {/* V 展开/收起按钮：支持子版块展开与周报帖子列表下拉 */}
+                        {canExpand && (
                           <button
                             type="button"
-                            title={isExpanded ? `收起 ${c.tag.name} 子版块` : `展开 ${c.tag.name} 子版块`}
-                            aria-label={isExpanded ? `收起 ${c.tag.name} 子版块` : `展开 ${c.tag.name} 子版块`}
+                            title={
+                              isExpanded
+                                ? `收起 ${c.tag.name} ${isWeekly ? "帖子" : "子版块"}`
+                                : `展开 ${c.tag.name} ${isWeekly ? "帖子" : "子版块"}`
+                            }
+                            aria-label={
+                              isExpanded
+                                ? `收起 ${c.tag.name} ${isWeekly ? "帖子" : "子版块"}`
+                                : `展开 ${c.tag.name} ${isWeekly ? "帖子" : "子版块"}`
+                            }
                             onClick={(e) => {
                               e.stopPropagation()
                               setExpandedSlugs((prev) => {
@@ -273,7 +390,7 @@ export function ForumLayout() {
                         )}
                       </div>
 
-                      {/* 子板块：仅在 isExpanded 时展开展示 */}
+                      {/* 子板块：仅在 hasChildren 且 isExpanded 时展开展示 */}
                       {hasChildren && isExpanded && (
                         <div className="ml-5 space-y-0.5 border-l border-border/50 pl-2 py-0.5 animate-in fade-in-50 duration-150">
                           {c.children.map((ch) => {
@@ -306,6 +423,15 @@ export function ForumLayout() {
                           })}
                         </div>
                       )}
+
+                      {/* 周报帖子列表：仅在 isWeekly 且 isExpanded 时展开展示 191 个周报帖子 */}
+                      {isWeekly && isExpanded && (
+                        <WeeklyDiscussionsList
+                          tagSlug={c.tag.slug}
+                          openDiscussion={openDiscussion}
+                          currentDiscussionId={currentDiscussionId}
+                        />
+                      )}
                     </div>
                   )
                 })}
@@ -316,6 +442,7 @@ export function ForumLayout() {
 
         {/* ==================== 2. 中栏：内容展示部分（独立垂直滚动区） ==================== */}
         <section
+          id="forum-content"
           ref={contentRef}
           aria-label="内容板块"
           className="min-w-0 flex-1 h-full min-h-0 overflow-y-auto pr-1 sm:pr-2 pb-24 sm:pb-8 [scrollbar-gutter:stable] overscroll-contain"

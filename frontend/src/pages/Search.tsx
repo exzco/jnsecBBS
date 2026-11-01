@@ -14,7 +14,6 @@ type Result = {
   posts: { post: Post; discussion: DiscussionSummary }[]
 }
 
-// 高亮命中词（文本已由 React 转义，无需担心注入）
 function Highlight({ text, q }: { text: string; q: string }) {
   if (!q.trim()) return <>{text}</>
   const parts: (string | { hit: string })[] = []

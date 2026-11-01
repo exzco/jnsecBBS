@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query"
 import { Navigate, useParams } from "react-router"
 import { api } from "@/lib/api"
 
-// 保留旧编辑链接：定位到首页三栏中的原帖和页码，在回复原位编辑。
 export default function EditPostPage() {
   const { id = "" } = useParams()
   const { data, isError, error } = useQuery({

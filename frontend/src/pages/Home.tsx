@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useSearchParams } from "react-router"
 import { Compass, ChevronDown, ChevronUp, Pin } from "lucide-react"
@@ -14,6 +14,9 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { DiscussionRowCompact, TagChip } from "@/components/DiscussionParts"
 import { InlineDiscussion } from "@/pages/Discussion"
 
+// 跨组件保留每个板块的浏览滚动深度（内存级单例）
+const boardScrollMap = new Map<string, number>()
+
 export default function HomePage() {
   const qc = useQueryClient()
   const { data: session } = useSession()
@@ -24,11 +27,6 @@ export default function HomePage() {
   // ?d=<id>：中栏内嵌文章详情；清空回到列表
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedId = Number(searchParams.get("d")) || 0
-
-  const openDiscussion = (id: number) => {
-    markDiscussionAsReadInCache(qc, id)
-    setSearchParams({ d: String(id) })
-  }
 
   const selectBoard = (slug: string) => {
     setBoard(slug)
@@ -74,6 +72,73 @@ export default function HomePage() {
     : undefined
   const isAll = active === "all"
 
+  const openDiscussion = (id: number) => {
+    markDiscussionAsReadInCache(qc, id)
+    const container = document.getElementById("forum-content")
+    if (container) {
+      boardScrollMap.set(active, container.scrollTop)
+    }
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set("d", String(id))
+      return next
+    })
+  }
+
+  const closeDiscussion = () => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.delete("d")
+      return next
+    })
+  }
+
+  // 监听当前展开讨论的变化，实现无缝滚动记忆恢复
+  const prevSelectedId = useRef(selectedId)
+  useEffect(() => {
+    const container = document.getElementById("forum-content")
+    if (!container) return
+
+    if (selectedId > 0 && prevSelectedId.current === 0) {
+      // 打开详情时，中栏滚动置顶自上而下阅读
+      container.scrollTo({ top: 0, behavior: "instant" })
+    } else if (selectedId === 0 && prevSelectedId.current > 0) {
+      // 从详情返回列表时，恢复先前所在板块的具体位置
+      const savedY = boardScrollMap.get(active) ?? 0
+      requestAnimationFrame(() => {
+        container.scrollTo({ top: savedY, behavior: "instant" })
+      })
+    }
+    prevSelectedId.current = selectedId
+  }, [selectedId, active])
+
+  // 实时记录当前活跃板块的列表滚动位置
+  useEffect(() => {
+    const container = document.getElementById("forum-content")
+    if (!container) return
+
+    const handleScroll = () => {
+      if (selectedId === 0) {
+        boardScrollMap.set(active, container.scrollTop)
+      }
+    }
+    container.addEventListener("scroll", handleScroll, { passive: true })
+    return () => container.removeEventListener("scroll", handleScroll)
+  }, [active, selectedId])
+
+  // 挂载时若无展开讨论且有历史滚动记忆，恢复之
+  useEffect(() => {
+    if (selectedId === 0) {
+      const container = document.getElementById("forum-content")
+      const savedY = boardScrollMap.get(active)
+      if (container && savedY !== undefined && savedY > 0) {
+        requestAnimationFrame(() => {
+          container.scrollTo({ top: savedY, behavior: "instant" })
+        })
+      }
+    }
+  }, [])
+
   // 仅在选中具体版块时拉取该版块的帖子列表
   const main = useInfiniteQuery({
     queryKey: ["tag-discussions", active],
@@ -102,13 +167,11 @@ export default function HomePage() {
     return { pinnedItems: pinned, regularItems: regular }
   }, [mainItems])
 
-  if (selectedId > 0) {
-    return <InlineDiscussion key={selectedId} id={selectedId} onBack={() => setSearchParams({})} />
-  }
-
-  if (isAll) {
-    return (
-      <div>
+  return (
+    <>
+      <div className={selectedId > 0 ? "hidden" : "block"}>
+        {isAll ? (
+          <div>
         <div className="mb-4 flex items-center justify-between rounded-xl border border-border/70 bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2.5">
             <Compass className="size-5 text-primary" />
@@ -138,11 +201,8 @@ export default function HomePage() {
           </div>
         )}
       </div>
-    )
-  }
-
-  return (
-    <div>
+    ) : (
+      <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-card p-4 shadow-xs">
         <div className="flex items-center gap-2.5">
           {activeTag?.color && (
@@ -257,6 +317,13 @@ export default function HomePage() {
         )}
       </div>
     </div>
+        )}
+      </div>
+
+      {selectedId > 0 && (
+        <InlineDiscussion key={selectedId} id={selectedId} onBack={closeDiscussion} />
+      )}
+    </>
   )
 }
 

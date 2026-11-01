@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router"
 import {
-  ChevronLeft, Eye, Flag, Heart, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
+  ArrowDownToLine, ChevronLeft, Eye, Flag, Heart, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useSession } from "@/lib/session"
@@ -20,12 +20,22 @@ import { timeAgo } from "@/lib/format"
 export default function DiscussionPage() {
   const { idSlug = "" } = useParams()
   const id = Number(idSlug.split("-")[0]) || 0
+  const navigate = useNavigate()
   return (
     <div>
-      <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2 gap-1 text-muted-foreground hover:text-foreground">
-        <Link to="/">
-          <ChevronLeft className="size-4" /> 返回论坛
-        </Link>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2 mb-2 gap-1 text-muted-foreground hover:text-foreground"
+        onClick={() => {
+          if (window.history.length > 1) {
+            navigate(-1)
+          } else {
+            navigate("/")
+          }
+        }}
+      >
+        <ChevronLeft className="size-4" /> 返回论坛
       </Button>
       <DiscussionView id={id} idSlug={idSlug} syncUrl />
     </div>
@@ -62,18 +72,134 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
     }
   }, [data, id, qc])
 
-  // 2. 首次打开帖子且为周报时，即时滚动到底部最新周报楼层
+  // 2. 监听用户滚动，记忆当前帖子的阅读楼层与位置（持久化到 localStorage）
   useEffect(() => {
-    if (data) {
-      const isWeekly = data.discussion.tags.some((t) => t.name.includes("周报") || t.slug === "weekly")
-      if (isWeekly && data.posts.length > 0) {
+    if (!data || data.posts.length === 0) return
+    const scroller = document.getElementById("forum-content") || document.documentElement
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const storageKey = `bbs_disc_read_pos_${id}`
+
+    const handleScroll = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        const top = scroller.scrollTop
+        let visiblePostId: number | undefined
+        let visiblePostNumber: number | undefined
+
+        // 计算当前视口中最靠顶部的帖子楼层
+        for (const p of data.posts) {
+          const el = document.getElementById(`post-${p.id}`)
+          if (el) {
+            const rect = el.getBoundingClientRect()
+            if (rect.bottom > 80) {
+              visiblePostId = p.id
+              visiblePostNumber = p.number
+              break
+            }
+          }
+        }
+
+        try {
+          localStorage.setItem(
+            storageKey,
+            JSON.stringify({
+              scrollTop: top,
+              postId: visiblePostId,
+              postNumber: visiblePostNumber,
+              updatedAt: Date.now(),
+            }),
+          )
+        } catch {
+          // ignore storage error
+        }
+      }, 150)
+    }
+
+    scroller.addEventListener("scroll", handleScroll, { passive: true })
+    return () => {
+      if (timer) clearTimeout(timer)
+      scroller.removeEventListener("scroll", handleScroll)
+    }
+  }, [data, id])
+
+  // 3. 打开讨论定位：第一次进入周报直达最底部最新楼层；后续再次进入恢复到之前看到的楼层
+  useEffect(() => {
+    if (!data || data.posts.length === 0) return
+
+    const isWeekly =
+      data.discussion.tags.some((t) => t.name.includes("周报") || t.slug === "weekly") ||
+      data.discussion.title.includes("周报")
+
+    const scroller = document.getElementById("forum-content") || document.documentElement
+    const storageKey = `bbs_disc_read_pos_${id}`
+    const storedStr = localStorage.getItem(storageKey)
+
+    const doScroll = () => {
+      // 1. 如果已有阅读记录（非第一次打开），精准恢复到之前看到的楼层
+      if (storedStr) {
+        try {
+          const parsed = JSON.parse(storedStr)
+          if (parsed.postId) {
+            const targetEl = document.getElementById(`post-${parsed.postId}`)
+            if (targetEl) {
+              targetEl.scrollIntoView({ behavior: "instant", block: "start" })
+              return
+            }
+          }
+          if (typeof parsed.scrollTop === "number" && parsed.scrollTop > 0) {
+            scroller.scrollTo({ top: parsed.scrollTop, behavior: "instant" })
+            return
+          }
+        } catch {
+          // ignore json error
+        }
+      }
+
+      // 2. 第一次打开周报：直达最底部最新周报楼层
+      if (isWeekly) {
         const last = data.posts[data.posts.length - 1]
+        const lastEl = last ? document.getElementById(`post-${last.id}`) : null
+        if (lastEl) {
+          lastEl.scrollIntoView({ behavior: "instant", block: "end" })
+        } else {
+          scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" })
+        }
+        // 标记已阅读过最新周报，后续再次进入将保持阅读进度
         if (last) {
-          document.getElementById(`post-${last.id}`)?.scrollIntoView({ behavior: "instant", block: "nearest" })
+          try {
+            localStorage.setItem(
+              storageKey,
+              JSON.stringify({
+                scrollTop: scroller.scrollTop,
+                postId: last.id,
+                postNumber: last.number,
+                updatedAt: Date.now(),
+              }),
+            )
+          } catch {
+            // ignore
+          }
         }
       }
     }
-  }, [data?.discussion.id])
+
+    let raf2: number | null = null
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        doScroll()
+      })
+    })
+
+    const t1 = setTimeout(doScroll, 80)
+    const t2 = setTimeout(doScroll, 260)
+
+    return () => {
+      cancelAnimationFrame(raf1)
+      if (raf2) cancelAnimationFrame(raf2)
+      clearTimeout(t1)
+      clearTimeout(t2)
+    }
+  }, [data?.discussion.id, id])
 
   // 旧链接 /d/{id} 规范化为 /d/{id}-{slug}（仅整页路由）
   useEffect(() => {
@@ -252,6 +378,10 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
     }, 100)
   }
 
+  const { data: session } = useSession()
+  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [titleInput, setTitleInput] = useState("")
+
   const mod = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
       api(`/api/discussions/${id}/mod`, { json: body }),
@@ -278,19 +408,88 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
   }
 
   const d = data.discussion
+  const isAuthor = Boolean(session?.user && d.author && session.user.id === d.author.id)
+  const canEditTitle = Boolean(data.isMod || isAuthor)
+  const isWeeklyDiscussion =
+    d.tags.some((t) => t.name.includes("周报") || t.slug === "weekly") || d.title.includes("周报")
+
+  const handleSaveTitle = () => {
+    const clean = titleInput.trim()
+    if (!clean || clean === d.title) {
+      setIsEditingTitle(false)
+      return
+    }
+    mod.mutate(
+      { action: "edit_meta", title: clean, tagIds: d.tags.map((t) => t.id) },
+      {
+        onSuccess: () => {
+          setIsEditingTitle(false)
+          toast.success("讨论标题已更新")
+        },
+      }
+    )
+  }
+
   const uniqueTags = Array.from(new Map(d.tags.map((t) => [t.id, t])).values())
 
   return (
     <div id="discussion-top">
       <div className="mb-4">
-        <div className="flex flex-wrap items-center gap-2">
-          {d.isHidden && (
-            <span className="rounded bg-red-500/10 px-2 py-0.5 text-xs font-semibold text-red-600 dark:text-red-400">
-              已删除
-            </span>
-          )}
-          <h1 className="text-2xl font-bold">{d.title}</h1>
-        </div>
+        {isEditingTitle ? (
+          <div className="rounded-xl border border-primary/40 bg-card p-3 shadow-xs animate-in fade-in-50">
+            <div className="mb-2 text-xs font-semibold text-primary">修改周报 / 讨论标题</div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Input
+                value={titleInput}
+                onChange={(e) => setTitleInput(e.target.value)}
+                maxLength={200}
+                placeholder="请输入新的讨论标题"
+                className="flex-1 font-medium"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    handleSaveTitle()
+                  } else if (e.key === "Escape") {
+                    setIsEditingTitle(false)
+                  }
+                }}
+              />
+              <div className="flex items-center gap-2">
+                <Button size="sm" disabled={!titleInput.trim() || mod.isPending} onClick={handleSaveTitle}>
+                  {mod.isPending ? "保存中…" : "保存"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setIsEditingTitle(false)}>
+                  取消
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            {d.isHidden && (
+              <span className="rounded bg-red-500/10 px-2 py-0.5 text-xs font-semibold text-red-600 dark:text-red-400">
+                已删除
+              </span>
+            )}
+            <h1 className="text-2xl font-bold">{d.title}</h1>
+            {canEditTitle && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 rounded-lg text-muted-foreground hover:bg-muted hover:text-primary transition-colors"
+                title="修改标题"
+                aria-label="修改标题"
+                onClick={() => {
+                  setTitleInput(d.title)
+                  setIsEditingTitle(true)
+                }}
+              >
+                <Pencil className="size-3.5" />
+              </Button>
+            )}
+          </div>
+        )}
         <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           {uniqueTags.map((t) => (
             <TagChip key={t.id} tag={t} />
@@ -414,6 +613,36 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
             <span>引用回复</span>
           </button>
         </div>
+      )}
+
+      {isWeeklyDiscussion && (
+        <button
+          type="button"
+          onClick={() => {
+            const scroller = document.getElementById("forum-content") || document.documentElement
+            scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" })
+            const last = data.posts[data.posts.length - 1]
+            if (last) {
+              try {
+                localStorage.setItem(
+                  `bbs_disc_read_pos_${id}`,
+                  JSON.stringify({
+                    scrollTop: scroller.scrollHeight,
+                    postId: last.id,
+                    postNumber: last.number,
+                    updatedAt: Date.now(),
+                  }),
+                )
+              } catch {
+                // ignore
+              }
+            }
+          }}
+          className="fixed bottom-6 right-6 z-30 flex items-center gap-1.5 rounded-full border border-border/80 bg-background/95 px-3 py-1.5 text-xs font-semibold text-foreground shadow-lg backdrop-blur-sm transition-all hover:bg-muted hover:border-primary/50 cursor-pointer"
+          title="直达最底部最新周报"
+        >
+          <ArrowDownToLine className="size-3.5 text-primary" /> 直达最新
+        </button>
       )}
     </div>
   )

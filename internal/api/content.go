@@ -305,13 +305,28 @@ func (s *Server) tagDiscussions(c *gin.Context) {
 	base.Session(&gorm.Session{}).Distinct("flarum_discussions.id").Count(&total)
 
 	page := pageParam(c)
-	pages := paginate(int(total), page, perPageDiscussions)
+	isAll := c.Query("all") == "1"
+	var pages int
 	var discs []models.Discussion
-	base.Session(&gorm.Session{}).
+	q := base.Session(&gorm.Session{}).
 		Preload("User").Preload("Tags").Preload("LastPostUser").
 		Distinct("flarum_discussions.*").
-		Order("flarum_discussions.is_sticky DESC, flarum_discussions.last_posted_at DESC").
-		Limit(perPageDiscussions).Offset((page - 1) * perPageDiscussions).Find(&discs)
+		Order("flarum_discussions.is_sticky DESC, flarum_discussions.last_posted_at DESC")
+
+	if isAll {
+		pages = 1
+		page = 1
+		if err := q.Find(&discs).Error; err != nil {
+			fail(c, http.StatusInternalServerError, "获取讨论列表失败。")
+			return
+		}
+	} else {
+		pages = paginate(int(total), page, perPageDiscussions)
+		if err := q.Limit(perPageDiscussions).Offset((page - 1) * perPageDiscussions).Find(&discs).Error; err != nil {
+			fail(c, http.StatusInternalServerError, "获取讨论列表失败。")
+			return
+		}
+	}
 
 	discIDs := make([]uint, 0, len(discs))
 	for i := range discs {
@@ -876,17 +891,19 @@ func (s *Server) reply(c *gin.Context) {
 	})
 }
 
-// moderate 版主操作：置顶/锁定/隐藏/改标题与标签。
+// moderate 版主/作者操作：版主支持置顶/锁定/隐藏；讨论作者或版主支持修改标题与标签。
 func (s *Server) moderate(c *gin.Context) {
 	u := s.currentUser(c)
-	if !u.IsModerator() {
-		fail(c, http.StatusForbidden, "该操作需要版主权限。")
-		return
-	}
 	id, _ := parseUint(c.Param("id"))
 	var d models.Discussion
 	if err := s.db.First(&d, id).Error; err != nil {
 		fail(c, http.StatusNotFound, "该帖子不存在。")
+		return
+	}
+	isOwner := d.UserID != nil && *d.UserID == u.ID
+	isMod := u.IsModerator()
+	if !isMod && !isOwner {
+		fail(c, http.StatusForbidden, "您没有权限修改该讨论。")
 		return
 	}
 	var body struct {
@@ -896,6 +913,10 @@ func (s *Server) moderate(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		fail(c, http.StatusBadRequest, "请求格式错误。")
+		return
+	}
+	if !isMod && body.Action != "edit_meta" {
+		fail(c, http.StatusForbidden, "普通用户仅支持修改标题与标签。")
 		return
 	}
 	switch body.Action {
