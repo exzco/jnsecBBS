@@ -1,6 +1,6 @@
-# JNSEC BBS 
+# issue 
 
-原有 PHP Flarum 论坛系统进行重构。项目基于 **Go 1.25** 与 **React 19** 构建，采用前后端单二进制嵌入交付，在完全兼容 Flarum 历史数据（9,000+ 讨论与帖子、s9e 富文本、bcrypt 密码、旧版 URL）的前提下，实现轻量化与自动化运维。
+浏览新站测试得到问题的同学在 issue 发一下具体问题以及简单的复现步骤，别在 QQ 群说了，人多了问题不好记。
 
 ### 后端服务 (Backend)
 - **核心语言与框架**：Go 1.25+、Gin 
@@ -17,9 +17,8 @@
 - **状态与缓存**：TanStack React Query v5（服务端状态与缓存）、NanoStores（轻量原子前端状态）
 
 ### 运维与基础设施 (Infra & DevOps)
-- **容器与网关**：Docker、Docker Compose、Nginx（宿主机反代与子域名分流）
-- **CDN 与证书**：Cloudflare CDN（边缘 HTTPS 卸载与安全防护）
-- **迁移期同步工具**：Python 3 同步脚本 (`scripts/sync-flarum.py`) + Linux Systemd Timer；当前生产共享数据库，定时任务已停用
+- **容器与网关**：Docker、Docker Compose、Nginx
+- **CDN 与证书**：Cloudflare CDN
 
 ---
 
@@ -119,8 +118,8 @@ flowchart TD
     Cloudflare -->|HTTP:80 透传| Nginx[VPS 宿主机 Nginx 网关]
     
     subgraph DomainRouting [生产入口]
-        Nginx -->|bbs.jnsec.org| GoApp[新站容器 bbs-app<br/>127.0.0.1:8080 / 可读写]
-        Operator[服务器本机维护] -->|127.0.0.1:8081| PHPApp[旧站容器 bbs-php<br/>保持运行 / 公网端口已阻断]
+        Nginx -->|new.bbs.jnsec.org| GoApp[新站容器 bbs-app<br/>127.0.0.1:8080 / 可读写]
+        Operator[bbs.jnsec.org] -->|127.0.0.1:8081| PHPApp[旧站容器 bbs-php<br/>保持运行 / 公网端口已阻断]
     end
     
     subgraph DataStorage [MySQL 5.7 / bbs-mysql]
@@ -149,34 +148,6 @@ flowchart TD
 
 ---
 
-## 5. 快速开始与常用操作
-
-### 本地开发
-```bash
-cd frontend
-bun install --frozen-lockfile
-bun run build
-cd ..
-
-go build -o bbs ./cmd/bbs
-export JNSEC_SESSION_SECRET="$(openssl rand -hex 32)"
-./bbs init-db -c config-test.yaml  # 仅适用于空数据库
-./bbs serve -c config-test.yaml
-```
-
-应用启动仅校验数据库，不自动建表。已有兼容库由管理员显式执行
-`./bbs migrate-db -c config-test.yaml`，升级 Go 辅助表与迁移版本记录。仅对选定的 Go
-运行库执行迁移；共享库先备份并由管理员迁移，应用账号无需 DDL 权限。只读镜像同步会保留 `bbs_user_profiles`、`bbs_schema_migrations` 等已批准
-本地表，继续拒绝未知表及结构漂移。
-
-`bbs native-import` 可将旧站快照转换到隔离的 `bbs_v2` 影子库，保留原始数据归档。
-在线 API 尚未适配该结构，不可直接修改应用 DSN。详见
-[独立数据库迁移](docs/native-migration.md) 和 [当前进度](PLAN.md)。
-
-已修复回复原位编辑、分类返回列表及分页跳转（#5–#7），保持现有三栏样式。
-PR #9 修复历史楼层缺口及并发回帖导致的重复楼层错误，使用 MySQL 5.7 完成并发回归，
-并随生产部署验收通过。当前服务器配置及验收记录见 [生产部署维护](docs/production-deployment.md)。
-
 ### 生产同步任务维护
 ```bash
 # 共享库模式下两个定时器应为 disabled，对应服务应为 inactive
@@ -189,6 +160,3 @@ sudo journalctl -u jnsec-bbs-sync.service -n 20 --no-pager
 `is-enabled` / `is-active` 对禁用或停止状态返回非零退出码，这是上述检查的预期结果。
 重新引入镜像同步或切换运行库前，需单独制定数据切换方案。
 
-## 6、测试 issue 
-
-浏览新站测试得到问题的同学在 issue 发一下具体问题以及简单的复现步骤，也许是这样说，别在 QQ 群说了，人多了问题多了不太好记。
