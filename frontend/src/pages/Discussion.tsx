@@ -341,7 +341,7 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
     onError: (e) => toast.error((e as Error).message),
   })
 
-  const handleReplyTo = (p: Post, quoteText?: string) => {
+  const handleReplyTo = (p: Post, quoteText?: string, quoteWholePost?: boolean) => {
     let textToQuote = quoteText
     if (!textToQuote) {
       const sel = window.getSelection()
@@ -353,6 +353,13 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
       }
     }
 
+    if (!textToQuote && quoteWholePost) {
+      textToQuote = p.content.trim()
+      if (textToQuote.length > 280) {
+        textToQuote = textToQuote.slice(0, 280).trim() + "..."
+      }
+    }
+
     const author = p.author?.username ?? "用户"
     if (textToQuote && textToQuote.trim()) {
       const clean = textToQuote.trim()
@@ -361,7 +368,7 @@ function DiscussionView({ id, idSlug = "", syncUrl = false }: { id: number; idSl
       setReplyContent((cur) => (cur.trim() ? `${cur.trimEnd()}\n\n${quote}` : quote))
       window.getSelection()?.removeAllRanges()
       setSelectionQuote(null)
-      toast.success("已添加划线引用")
+      toast.success("已添加引用回复")
     } else {
       const quote = `@${author} #${p.number} `
       setReplyContent((cur) => (cur ? `${cur}\n${quote}` : quote))
@@ -721,7 +728,7 @@ function PostItem({
 }: {
   p: Post
   canReply?: boolean
-  onReplyTo?: (p: Post, quoteText?: string) => void
+  onReplyTo?: (p: Post, quoteText?: string, quoteWholePost?: boolean) => void
 }) {
   const { data: session } = useSession()
   const [params, setParams] = useSearchParams()
@@ -854,14 +861,24 @@ function PostItem({
 
       <footer className="mt-3 flex flex-wrap items-center gap-3 text-sm">
         {canReply && (
-          <button
-            type="button"
-            onClick={() => onReplyTo?.(p)}
-            className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary"
-            title="回复或引用选中内容"
-          >
-            <Reply className="size-3.5" /> 回复
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => onReplyTo?.(p, undefined, true)}
+              className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary transition-colors cursor-pointer"
+              title="引用此楼层内容并回复"
+            >
+              <Quote className="size-3.5" /> 引用
+            </button>
+            <button
+              type="button"
+              onClick={() => onReplyTo?.(p)}
+              className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary transition-colors cursor-pointer"
+              title="提及该楼层作者"
+            >
+              <Reply className="size-3.5" /> 回复
+            </button>
+          </>
         )}
         {p.canEdit && !editing && (
           <button type="button" onClick={() => setEditing(true)} className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary">
