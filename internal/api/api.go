@@ -361,6 +361,8 @@ func (s *Server) discussionSummaryDTO(d *models.Discussion, u *models.User) Disc
 	}
 	if d.LastPostUser != nil {
 		dto.LastPoster = d.LastPostUser.Username
+	} else if d.User.Username != "" {
+		dto.LastPoster = d.User.Username
 	}
 	return dto
 }

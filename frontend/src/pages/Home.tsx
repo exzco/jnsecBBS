@@ -267,8 +267,8 @@ export default function HomePage() {
         </Button>
       </div>
 
-      {/* 版块内部讨论列表（紧凑高密度布局） */}
-      <div className="space-y-2">
+      {/* 版块内部讨论列表（紧密无缝列表，类似右侧最新帖子） */}
+      <div className="space-y-3">
         {/* 置顶讨论独立折叠区 */}
         {pinnedItems.length > 0 && (
           <div className="overflow-hidden rounded-xl border border-amber-500/30 bg-amber-500/5">
@@ -296,7 +296,7 @@ export default function HomePage() {
                 </button>
               )}
             </div>
-            <div className="p-2 sm:p-2.5 space-y-2">
+            <div className="divide-y divide-amber-500/20">
               {(expandSticky ? pinnedItems : pinnedItems.slice(0, 2)).map((d) => (
                 <DiscussionRowCompact key={d.id} d={d} onOpen={openDiscussion} />
               ))}
@@ -304,18 +304,28 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* 常规帖子列表（高密度紧凑卡片） */}
+        {/* 常规帖子列表（统一卡片包裹，内部无缝紧挨，类似右侧最新帖子） */}
         {main.isLoading ? (
-          <div className="space-y-2">
+          <div className="overflow-hidden rounded-xl border border-border/70 bg-card shadow-xs divide-y divide-border/40">
             {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-16 rounded-lg" />
+              <div key={i} className="p-3 sm:px-4 sm:py-3 space-y-2">
+                <Skeleton className="h-4 w-3/4 rounded" />
+                <div className="flex justify-between items-center pt-1">
+                  <Skeleton className="h-3.5 w-24 rounded" />
+                  <Skeleton className="h-3.5 w-32 rounded" />
+                </div>
+              </div>
             ))}
           </div>
         ) : (
           <>
-            {regularItems.map((d) => (
-              <DiscussionRowCompact key={d.id} d={d} onOpen={openDiscussion} />
-            ))}
+            {regularItems.length > 0 && (
+              <div className="overflow-hidden rounded-xl border border-border/70 bg-card shadow-xs divide-y divide-border/40">
+                {regularItems.map((d) => (
+                  <DiscussionRowCompact key={d.id} d={d} onOpen={openDiscussion} />
+                ))}
+              </div>
+            )}
 
             {regularItems.length === 0 && pinnedItems.length === 0 && (
               <div className="rounded-xl border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
