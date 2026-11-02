@@ -150,6 +150,35 @@ export default function HomePage() {
     enabled: !!user && !isAll,
   })
 
+  // 拖动/滚动到页面约 90% 位置时自动触发 callback 加载更多讨论
+  const isFetchingNextPage = main.isFetchingNextPage
+  const hasNextPage = main.hasNextPage
+  const fetchNextPage = main.fetchNextPage
+
+  useEffect(() => {
+    if (selectedId > 0 || isAll) return
+    const container = document.getElementById("forum-content")
+    if (!container) return
+
+    let ticking = false
+    const handleScrollAutoLoad = () => {
+      if (ticking || !hasNextPage || isFetchingNextPage) return
+
+      ticking = true
+      requestAnimationFrame(() => {
+        const { scrollTop, clientHeight, scrollHeight } = container
+        // 当滑动深度达到 88%~90% 以上时自动加载下一页
+        if (scrollHeight > clientHeight && (scrollTop + clientHeight) / scrollHeight >= 0.88) {
+          void fetchNextPage()
+        }
+        ticking = false
+      })
+    }
+
+    container.addEventListener("scroll", handleScrollAutoLoad, { passive: true })
+    return () => container.removeEventListener("scroll", handleScrollAutoLoad)
+  }, [selectedId, isAll, hasNextPage, isFetchingNextPage, fetchNextPage])
+
   const mainItems = main.data?.pages.flatMap((p) => p.items) ?? []
   const mainTotal = main.data?.pages[0]?.page.total
 
@@ -238,12 +267,12 @@ export default function HomePage() {
         </Button>
       </div>
 
-      {/* 版块内部讨论列表 */}
-      <div className="space-y-3.5">
+      {/* 版块内部讨论列表（紧凑高密度布局） */}
+      <div className="space-y-2">
         {/* 置顶讨论独立折叠区 */}
         {pinnedItems.length > 0 && (
           <div className="overflow-hidden rounded-xl border border-amber-500/30 bg-amber-500/5">
-            <div className="flex items-center justify-between border-b border-amber-500/20 px-4 py-2.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+            <div className="flex items-center justify-between border-b border-amber-500/20 px-4 py-2 text-xs font-semibold text-amber-800 dark:text-amber-300">
               <span className="flex items-center gap-1.5">
                 <Pin className="size-3.5" /> 置顶公告
                 <span className="rounded-full bg-amber-500/20 px-1.5 py-0.2 text-[10px]">
@@ -267,7 +296,7 @@ export default function HomePage() {
                 </button>
               )}
             </div>
-            <div className="p-3 space-y-3">
+            <div className="p-2 sm:p-2.5 space-y-2">
               {(expandSticky ? pinnedItems : pinnedItems.slice(0, 2)).map((d) => (
                 <DiscussionRowCompact key={d.id} d={d} onOpen={openDiscussion} />
               ))}
@@ -275,11 +304,11 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* 常规帖子卡片列表 */}
+        {/* 常规帖子列表（高密度紧凑卡片） */}
         {main.isLoading ? (
-          <div className="space-y-3">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-28 rounded-xl" />
+          <div className="space-y-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 rounded-lg" />
             ))}
           </div>
         ) : (
@@ -296,23 +325,29 @@ export default function HomePage() {
           </>
         )}
 
+        {/* 自动触底加载指示器与兜底手动按钮 */}
         {main.hasNextPage && (
-          <div className="pt-4 pb-6 text-center">
-            <Button
-              variant="outline"
-              size="lg"
-              onClick={() => void main.fetchNextPage()}
-              disabled={main.isFetchingNextPage}
-              className="w-full sm:w-auto px-8 font-medium shadow-xs"
-            >
-              {main.isFetchingNextPage ? "加载中…" : "加载更多帖子"}
-            </Button>
+          <div className="pt-2 pb-6 flex items-center justify-center text-xs text-muted-foreground">
+            {main.isFetchingNextPage ? (
+              <span className="inline-flex items-center gap-2 font-medium text-primary py-2">
+                <span className="size-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                正在加载更多讨论…
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void main.fetchNextPage()}
+                className="text-xs text-muted-foreground/60 hover:text-foreground py-2 transition-colors cursor-pointer"
+              >
+                下滑至 90% 自动加载，或点击此处加载更多
+              </button>
+            )}
           </div>
         )}
 
         {!main.hasNextPage && mainItems.length > 0 && (
-          <div className="py-6 text-center text-xs text-muted-foreground/75">
-            已经到底了，共 {mainTotal ?? mainItems.length} 篇讨论
+          <div className="py-5 text-center text-xs text-muted-foreground/60">
+            — 已经到底了，共 {mainTotal ?? mainItems.length} 篇讨论 —
           </div>
         )}
       </div>

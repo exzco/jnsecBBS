@@ -81,7 +81,7 @@ export function GroupBadges({ user }: { user: User }) {
   )
 }
 
-// 现代化 Reddit / Shadcn 风格讨论卡片：加粗超大标题、全宽视觉空间、清晰元信息与交互药丸
+// 高密度讨论条目：参考最新帖子紧凑风格（上方标题，下方左侧作者名称，下方右侧浏览量/回复数/多久前）
 export function DiscussionRowCompact({
   d,
   onOpen,
@@ -99,89 +99,70 @@ export function DiscussionRowCompact({
       tabIndex={0}
       onClick={open}
       onKeyDown={(e) => e.key === "Enter" && open()}
-      className="group relative flex flex-col justify-between rounded-xl border border-border/70 bg-card p-4 transition-all duration-200 hover:border-primary/40 hover:shadow-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-5"
+      className="group relative flex flex-col justify-between rounded-lg border border-border/70 bg-card px-3.5 py-2.5 transition-all duration-150 hover:bg-muted/40 hover:border-primary/40 hover:shadow-xs cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:px-4 sm:py-3"
     >
-      {/* 顶部元数据：版块徽标 + 作者头像/名称 + 时间 + 状态 */}
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        {mainTag && <TagChip tag={mainTag} />}
-        <Link
-          to={`/u/${d.author?.username ?? ""}`}
-          onClick={(e) => e.stopPropagation()}
-          className="flex items-center gap-1.5 font-medium text-foreground/85 hover:text-primary hover:underline"
-        >
-          <UserAvatar user={d.author} className="size-5 ring-1 ring-border/60" />
-          <span>{d.author?.username}</span>
-        </Link>
-        <span>•</span>
-        <time>{timeAgo(d.lastPostedAt)}</time>
-
-        <div className="ml-auto flex items-center gap-1.5">
+      {/* 1. 上方：标题与状态徽标 */}
+      <div className="flex items-start justify-between gap-2.5">
+        <h2 className="flex-1 min-w-0 text-sm sm:text-[15px] font-semibold tracking-tight text-foreground group-hover:text-primary transition-colors line-clamp-1 leading-snug">
           {d.hasUnread && (
             <span
-              className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[11px] font-semibold text-blue-600 dark:text-blue-400"
+              className="mr-1.5 inline-block size-2 rounded-full bg-blue-600 ring-2 ring-blue-500/20 align-middle shrink-0"
               title="有未读更新"
-            >
-              <span className="size-1.5 rounded-full bg-blue-600 dark:bg-blue-400" />
-              未读
-            </span>
+            />
           )}
           {d.isSticky && (
-            <span className="inline-flex items-center gap-0.5 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
-              <Pin className="size-3" /> 置顶
+            <span className="mr-1.5 inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.2 text-[10px] font-semibold text-amber-700 dark:text-amber-400 align-middle shrink-0">
+              <Pin className="size-2.5" /> 置顶
             </span>
           )}
           {d.isLocked && (
-            <span className="inline-flex items-center gap-0.5 rounded-md bg-zinc-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-zinc-700 dark:text-zinc-400">
-              <Lock className="size-3" /> 锁定
+            <span className="mr-1.5 inline-flex items-center gap-0.5 rounded bg-zinc-500/15 px-1.5 py-0.2 text-[10px] font-semibold text-zinc-700 dark:text-zinc-400 align-middle shrink-0">
+              <Lock className="size-2.5" /> 锁定
             </span>
           )}
           {d.isHidden && (
-            <span className="inline-flex items-center gap-0.5 rounded-md bg-red-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-red-600 dark:text-red-400">
-              <Trash2 className="size-3" /> 已删除
+            <span className="mr-1.5 inline-flex items-center gap-0.5 rounded bg-red-500/15 px-1.5 py-0.2 text-[10px] font-semibold text-red-600 dark:text-red-400 align-middle shrink-0">
+              <Trash2 className="size-2.5" /> 已删除
             </span>
           )}
-        </div>
+          <span>{d.title}</span>
+        </h2>
+        {mainTag && (
+          <span className="hidden sm:inline-flex shrink-0">
+            <TagChip tag={mainTag} className="text-[10px] py-0 px-2 leading-tight" />
+          </span>
+        )}
       </div>
 
-      {/* 标题：Reddit 风格大号粗体 */}
-      <h2 className="my-2.5 text-base sm:text-lg lg:text-[19px] font-bold tracking-tight text-foreground group-hover:text-primary transition-colors leading-snug">
-        {d.title}
-      </h2>
+      {/* 2. 下方：左侧作者名称，右侧浏览量、回复数、多久前 */}
+      <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground leading-none">
+        {/* 下方左侧：作者名称 */}
+        <Link
+          to={`/u/${d.author?.username ?? ""}`}
+          onClick={(e) => e.stopPropagation()}
+          className="flex items-center gap-1.5 font-medium text-foreground/80 hover:text-primary hover:underline truncate max-w-[45%]"
+        >
+          <UserAvatar user={d.author} className="size-4.5 ring-1 ring-border/40 shrink-0" />
+          <span className="truncate">{d.author?.username}</span>
+        </Link>
 
-      {/* 次级标签 */}
-      {d.tags.length > 1 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {d.tags.slice(1).map((t) => (
-            <TagChip key={t.id} tag={t} />
-          ))}
-        </div>
-      )}
-
-      {/* 底部交互条：回复数药丸、浏览量与最后活跃人 */}
-      <div className="flex items-center justify-between pt-1 text-xs text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full bg-secondary/80 px-3 py-1 font-semibold text-secondary-foreground transition-colors group-hover:bg-primary/10 group-hover:text-primary"
-          >
-            <MessageSquare className="size-3.5" />
-            {d.commentCount} 条回复
-          </span>
-          {typeof d.viewCount === "number" && d.viewCount > 0 && (
-            <span
-              className="inline-flex items-center gap-1 text-[11px] text-muted-foreground/80"
-              title={`浏览量: ${d.viewCount} 次`}
-            >
-              <Eye className="size-3" />
+        {/* 下方右侧：浏览量，回复数，多久前 */}
+        <div className="flex items-center gap-3 shrink-0 text-[11px] text-muted-foreground/85">
+          {typeof d.viewCount === "number" && (
+            <span className="flex items-center gap-1" title={`浏览量: ${d.viewCount} 次`}>
+              <Eye className="size-3 text-muted-foreground/70" />
               {d.viewCount}
             </span>
           )}
-        </div>
-
-        {d.lastPoster && (
-          <span className="text-[11px] text-muted-foreground">
-            最后回复: {d.lastPoster}
+          <span className="flex items-center gap-1" title={`回复数: ${d.commentCount} 条`}>
+            <MessageSquare className="size-3 text-muted-foreground/70" />
+            {d.commentCount}
           </span>
-        )}
+          <span>•</span>
+          <time title={d.lastPostedAt ? new Date(d.lastPostedAt).toLocaleString() : ""}>
+            {timeAgo(d.lastPostedAt)}
+          </time>
+        </div>
       </div>
     </article>
   )

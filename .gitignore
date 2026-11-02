@@ -20,3 +20,4 @@ old_backup_data/
 
 __pycache__/
 *.pyc
+image*
