@@ -71,7 +71,7 @@ export function Navbar({ siteName }: { siteName: string }) {
       className="sticky top-0 z-50 shrink-0 shadow-md"
       style={{ background: "linear-gradient(90deg, #005661, #00838f)" }}
     >
-      <div className="mx-auto flex h-14 w-full max-w-[1780px] items-center px-3 sm:px-6 lg:px-8">
+      <div className="flex h-14 w-full items-center px-3 sm:px-6 2xl:px-8">
         {/* 移动端全宽搜索条状态 */}
         {mobileSearchOpen ? (
           <form

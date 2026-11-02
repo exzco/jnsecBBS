@@ -86,7 +86,7 @@ function Shell() {
       <Navbar siteName={siteName} />
       <main
         className={cn(
-          "mx-auto w-full max-w-[1780px] px-2 sm:px-6 lg:px-8 flex-1 min-h-0",
+          "w-full px-2 sm:px-6 2xl:px-8 flex-1 min-h-0",
           !isAuthOrAdmin
             ? "py-2 sm:py-3 flex flex-col overflow-hidden"
             : "py-5 overflow-y-auto [scrollbar-gutter:stable]",
