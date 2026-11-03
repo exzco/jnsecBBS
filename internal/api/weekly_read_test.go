@@ -11,7 +11,7 @@ import (
 	"github.com/exzco/bbs/internal/models"
 )
 
-func TestWeeklyDiscussionDefaultsToLastPageAndTracksRead(t *testing.T) {
+func TestWeeklyDiscussionRecentAndFromStart(t *testing.T) {
 	g, user, router := profileTestServer(t)
 
 	// Create weekly tag
@@ -20,7 +20,7 @@ func TestWeeklyDiscussionDefaultsToLastPageAndTracksRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a weekly discussion with 20 posts (so 2 pages with perPagePosts = 15)
+	// Create a weekly discussion
 	disc := models.Discussion{
 		Title:        "2026年度周报合集",
 		SlugCol:      "weekly-2026",
@@ -35,8 +35,21 @@ func TestWeeklyDiscussionDefaultsToLastPageAndTracksRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	now := time.Now()
+	// 楼层 1..5: 100 天前
+	// 楼层 6..10: 45 天前
+	// 楼层 11..20: 近 10 天内
 	for i := 1; i <= 20; i++ {
 		num := i
+		var createdAt time.Time
+		if i <= 5 {
+			createdAt = now.AddDate(0, 0, -100).Add(time.Duration(i) * time.Hour)
+		} else if i <= 10 {
+			createdAt = now.AddDate(0, 0, -45).Add(time.Duration(i) * time.Hour)
+		} else {
+			createdAt = now.AddDate(0, 0, -10).Add(time.Duration(i) * time.Hour)
+		}
+
 		p := models.Post{
 			DiscussionID: disc.ID,
 			Number:       &num,
@@ -44,14 +57,14 @@ func TestWeeklyDiscussionDefaultsToLastPageAndTracksRead(t *testing.T) {
 			Type:         "comment",
 			Content:      fmt.Sprintf("第 %d 楼周报", i),
 			IsApproved:   true,
-			CreatedAt:    time.Now().Add(time.Duration(i) * time.Hour),
+			CreatedAt:    createdAt,
 		}
 		if err := g.Create(&p).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// Request without ?page=
+	// 1. 点开周报详情：无需去数据库查询帖子所有数据，查询近30天的即可 (应只包含 11..20 楼)
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d", disc.ID), nil)
 	router.ServeHTTP(w, req)
@@ -72,28 +85,73 @@ func TestWeeklyDiscussionDefaultsToLastPageAndTracksRead(t *testing.T) {
 		Posts []struct {
 			Number int `json:"number"`
 		} `json:"posts"`
+		WindowDays int  `json:"windowDays"`
+		IsWeekly   bool `json:"isWeekly"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
 		t.Fatal(err)
 	}
 
-	if res.Page.Page != 2 {
-		t.Fatalf("expected weekly discussion to default to page 2 (last page), got page %d", res.Page.Page)
+	if !res.IsWeekly {
+		t.Fatalf("expected isWeekly to be true")
 	}
-	if len(res.Posts) == 0 || res.Posts[len(res.Posts)-1].Number != 20 {
-		t.Fatalf("expected latest post (floor 20) to be in posts, got %v", res.Posts)
+	if res.WindowDays != 30 {
+		t.Fatalf("expected windowDays to be 30, got %d", res.WindowDays)
 	}
-	if res.Discussion.HasUnread {
-		t.Fatalf("expected viewing discussion to mark HasUnread=false, got true")
+	if len(res.Posts) != 10 {
+		t.Fatalf("expected 10 posts in last 30 days (floors 11..20), got %d posts", len(res.Posts))
+	}
+	if res.Posts[0].Number != 11 || res.Posts[len(res.Posts)-1].Number != 20 {
+		t.Fatalf("expected posts 11..20, got first=%d last=%d", res.Posts[0].Number, res.Posts[len(res.Posts)-1].Number)
 	}
 
-	// Verify flarum_discussion_user record was saved
-	var du models.DiscussionUser
-	if err := g.Where("user_id = ? AND discussion_id = ?", user.ID, disc.ID).First(&du).Error; err != nil {
-		t.Fatalf("expected read progress to be recorded: %v", err)
+	// 2. 测试一键置顶后从头查询最开始的数据 (from_start=1&page=1)
+	wStart := httptest.NewRecorder()
+	reqStart := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d?from_start=1&page=1&per_page=5", disc.ID), nil)
+	router.ServeHTTP(wStart, reqStart)
+	if wStart.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wStart.Code, wStart.Body.String())
 	}
-	if du.LastReadPostNumber == nil || *du.LastReadPostNumber != 20 {
-		t.Fatalf("expected last read post number 20, got %v", du.LastReadPostNumber)
+	var resStart struct {
+		Page struct {
+			Page  int `json:"page"`
+			Pages int `json:"pages"`
+			Total int `json:"total"`
+		} `json:"page"`
+		Posts []struct {
+			Number int `json:"number"`
+		} `json:"posts"`
+	}
+	if err := json.Unmarshal(wStart.Body.Bytes(), &resStart); err != nil {
+		t.Fatal(err)
+	}
+	if resStart.Page.Page != 1 || resStart.Page.Pages != 4 || resStart.Page.Total != 20 {
+		t.Fatalf("expected page 1 of 4 (total 20), got %+v", resStart.Page)
+	}
+	if len(resStart.Posts) != 5 || resStart.Posts[0].Number != 1 || resStart.Posts[4].Number != 5 {
+		t.Fatalf("expected posts 1..5 for from_start page 1, got %+v", resStart.Posts)
+	}
+
+	// 3. 测试往下滑动逐步加载数据 (from_start=1&page=2)
+	wPage2 := httptest.NewRecorder()
+	reqPage2 := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d?from_start=1&page=2&per_page=5", disc.ID), nil)
+	router.ServeHTTP(wPage2, reqPage2)
+	if wPage2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", wPage2.Code)
+	}
+	var resPage2 struct {
+		Page struct {
+			Page int `json:"page"`
+		} `json:"page"`
+		Posts []struct {
+			Number int `json:"number"`
+		} `json:"posts"`
+	}
+	if err := json.Unmarshal(wPage2.Body.Bytes(), &resPage2); err != nil {
+		t.Fatal(err)
+	}
+	if resPage2.Page.Page != 2 || len(resPage2.Posts) != 5 || resPage2.Posts[0].Number != 6 {
+		t.Fatalf("expected page 2 with posts 6..10, got %+v", resPage2)
 	}
 
 	// Verify subsequent /api/recent returns hasUnread = false
@@ -285,5 +343,72 @@ func TestHideFirstPostSynchronizesDiscussionHidden(t *testing.T) {
 	router.ServeHTTP(wDetail2, reqDetail2)
 	if wDetail2.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", wDetail2.Code, wDetail2.Body.String())
+	}
+}
+
+func TestWeeklyDiscussionFallback60Days(t *testing.T) {
+	g, user, router := profileTestServer(t)
+
+	weeklyTag := models.Tag{Name: "周报", Slug: "weekly"}
+	if err := g.Create(&weeklyTag).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	disc := models.Discussion{
+		Title:        "停更测试周报",
+		SlugCol:      "weekly-fallback-test",
+		UserID:       &user.ID,
+		IsApproved:   true,
+		CommentCount: 3,
+		Tags:         []models.Tag{weeklyTag},
+	}
+	lastNum := 3
+	disc.LastPostNumber = &lastNum
+	if err := g.Create(&disc).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	// 所有帖子都在 45 天前（近 30 天内 0 条）
+	for i := 1; i <= 3; i++ {
+		num := i
+		p := models.Post{
+			DiscussionID: disc.ID,
+			Number:       &num,
+			UserID:       &user.ID,
+			Type:         "comment",
+			Content:      fmt.Sprintf("45天前第 %d 楼", i),
+			IsApproved:   true,
+			CreatedAt:    now.AddDate(0, 0, -45).Add(time.Duration(i) * time.Hour),
+		}
+		if err := g.Create(&p).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d", disc.ID), nil)
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res struct {
+		WindowDays int `json:"windowDays"`
+		Posts      []struct {
+			Number int `json:"number"`
+		} `json:"posts"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+
+	// 近 30 天无数据，近 60 天有数据 -> windowDays 应该是 60
+	if res.WindowDays != 60 {
+		t.Fatalf("expected fallback to 60 days, got %d", res.WindowDays)
+	}
+	if len(res.Posts) != 3 {
+		t.Fatalf("expected 3 posts from 60 days range, got %d", len(res.Posts))
 	}
 }

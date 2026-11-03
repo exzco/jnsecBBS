@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router"
 import {
-  ArrowDownToLine, ChevronLeft, Eye, Flag, Heart, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
+  ArrowUpToLine, ChevronLeft, Eye, Flag, Heart, Loader2, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useSession } from "@/lib/session"
@@ -409,8 +409,101 @@ function DiscussionView({
   const d = data.discussion
   const isAuthor = Boolean(session?.user && d.author && session.user.id === d.author.id)
   const canEditTitle = Boolean(data.isMod || isAuthor)
-  const isWeeklyDiscussion =
-    d.tags.some((t) => t.name.includes("周报") || t.slug === "weekly") || d.title.includes("周报")
+  const isWeeklyDiscussion = Boolean(
+    data.isWeekly ||
+    d.tags.some((t) => t.name.includes("周报") || t.slug === "weekly") ||
+    d.title.includes("周报")
+  )
+
+  const [isFromStart, setIsFromStart] = useState(false)
+  const [startPosts, setStartPosts] = useState<Post[]>([])
+  const [startPage, setStartPage] = useState(1)
+  const [startTotalPages, setStartTotalPages] = useState(1)
+  const [isLoadingStart, setIsLoadingStart] = useState(false)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
+
+  // 当讨论切换时重置从头加载状态
+  useEffect(() => {
+    setIsFromStart(false)
+    setStartPosts([])
+    setStartPage(1)
+    setStartTotalPages(1)
+  }, [id])
+
+  const handleSwitchToStart = async () => {
+    if (isLoadingStart) return
+    setIsLoadingStart(true)
+    try {
+      const res = await api<DiscussionDetail>(`/api/discussions/${id}?from_start=1&page=1&per_page=20`)
+      setStartPosts(res.posts)
+      setStartPage(res.page.page)
+      setStartTotalPages(res.page.pages)
+      setIsFromStart(true)
+      const scroller = document.getElementById("forum-content") || document.documentElement
+      scroller.scrollTo({ top: 0, behavior: "smooth" })
+      toast.success("已置顶，正在浏览最早周报，往下滑动逐步加载")
+    } catch (e) {
+      toast.error("加载数据失败: " + (e as Error).message)
+    } finally {
+      setIsLoadingStart(false)
+    }
+  }
+
+  const handleLoadMore = async (nextPage: number) => {
+    if (isLoadingMore || nextPage > startTotalPages) return
+    setIsLoadingMore(true)
+    try {
+      const res = await api<DiscussionDetail>(`/api/discussions/${id}?from_start=1&page=${nextPage}&per_page=20`)
+      setStartPosts((prev) => {
+        const existingIds = new Set(prev.map((p) => p.id))
+        const newPosts = res.posts.filter((p) => !existingIds.has(p.id))
+        return [...prev, ...newPosts]
+      })
+      setStartPage(res.page.page)
+      setStartTotalPages(res.page.pages)
+    } catch (e) {
+      toast.error("加载更多数据失败: " + (e as Error).message)
+    } finally {
+      setIsLoadingMore(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!isFromStart) return
+    const scroller = document.getElementById("forum-content") || document.documentElement
+
+    const onScroll = () => {
+      if (isLoadingMore || isLoadingStart) return
+      if (startPage >= startTotalPages) return
+
+      const scrollHeight = scroller.scrollHeight
+      const scrollTop = scroller.scrollTop || document.documentElement.scrollTop
+      const clientHeight = scroller.clientHeight || window.innerHeight
+
+      if (scrollHeight - (scrollTop + clientHeight) < 300) {
+        handleLoadMore(startPage + 1)
+      }
+    }
+
+    scroller.addEventListener("scroll", onScroll, { passive: true })
+    return () => scroller.removeEventListener("scroll", onScroll)
+  }, [isFromStart, startPage, startTotalPages, isLoadingMore, isLoadingStart, id])
+
+  const handlePostHidden = (postId: number, hidden: boolean) => {
+    if (isFromStart) {
+      setStartPosts((prev) => prev.map((item) => (item.id === postId ? { ...item, hidden } : item)))
+    }
+  }
+
+  const handlePostLiked = (postId: number, liked: boolean, likeCount: number, likers?: User[]) => {
+    if (isFromStart) {
+      setStartPosts((prev) =>
+        prev.map((item) => (item.id === postId ? { ...item, liked, likeCount, likers: likers || item.likers } : item))
+      )
+    }
+  }
+
+  const displayPosts = isFromStart ? startPosts : data.posts
 
   const handleSaveTitle = () => {
     const clean = titleInput.trim()
@@ -526,10 +619,78 @@ function DiscussionView({
 
       {data.isMod && <ModBar d={d} editorTags={data.editorTags} onAction={mod.mutate} />}
 
+      {isWeeklyDiscussion && !isFromStart && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3.5 py-2.5 text-xs text-primary shadow-2xs">
+          <div className="flex items-center gap-1.5 font-medium">
+            <span>
+              已为您加载近 {data.windowDays || 30} 天周报内容（共 {displayPosts.length} 篇）
+            </span>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 border-primary/30 bg-background/90 hover:bg-primary hover:text-primary-foreground text-xs font-semibold cursor-pointer shadow-2xs transition-colors"
+            onClick={handleSwitchToStart}
+            disabled={isLoadingStart}
+          >
+            <ArrowUpToLine className="size-3.5" />
+            {isLoadingStart ? "加载中…" : "一键置顶"}
+          </Button>
+        </div>
+      )}
+
+      {isWeeklyDiscussion && isFromStart && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/40 px-3.5 py-2.5 text-xs text-muted-foreground shadow-2xs">
+          <div className="flex items-center gap-1.5 font-medium text-foreground">
+            <ArrowUpToLine className="size-3.5 text-primary" />
+            <span>已置顶浏览最早周报（往下滑动逐步加载，已加载 {startPosts.length} 篇）</span>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1 text-xs text-primary hover:bg-primary/10 cursor-pointer"
+            onClick={() => {
+              setIsFromStart(false)
+              const scroller = document.getElementById("forum-content") || document.documentElement
+              scroller.scrollTo({ top: 0, behavior: "smooth" })
+            }}
+          >
+            返回最新周报
+          </Button>
+        </div>
+      )}
+
       <section className="flex flex-col">
-        {data.posts.map((p) => (
-          <PostItem key={p.id} p={p} canReply={data.canReply} onReplyTo={handleReplyTo} />
+        {displayPosts.map((p) => (
+          <PostItem
+            key={p.id}
+            p={p}
+            canReply={data.canReply}
+            onReplyTo={handleReplyTo}
+            onHiddenChange={handlePostHidden}
+            onLikedChange={handlePostLiked}
+          />
         ))}
+        {isFromStart && (
+          <div className="py-4 text-center text-xs text-muted-foreground">
+            {isLoadingMore ? (
+              <span className="inline-flex items-center gap-1.5 text-primary">
+                <Loader2 className="size-3.5 animate-spin" />
+                正在加载后续周报…
+              </span>
+            ) : startPage < startTotalPages ? (
+              <button
+                type="button"
+                onClick={() => handleLoadMore(startPage + 1)}
+                className="text-primary hover:underline cursor-pointer"
+              >
+                下滑或点击加载更多 (当前已加载至第 {startPage}/{startTotalPages} 页)
+              </button>
+            ) : (
+              <span>已加载全部周报内容（共 {startPosts.length} 篇）</span>
+            )}
+          </div>
+        )}
       </section>
 
       {data.viewers && data.viewers.length > 0 && (
@@ -632,30 +793,24 @@ function DiscussionView({
       {isWeeklyDiscussion && (
         <button
           type="button"
-          onClick={() => {
-            const scroller = document.getElementById("forum-content") || document.documentElement
-            scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" })
-            const last = data.posts[data.posts.length - 1]
-            if (last) {
-              try {
-                localStorage.setItem(
-                  `bbs_disc_read_pos_${id}`,
-                  JSON.stringify({
-                    scrollTop: scroller.scrollHeight,
-                    postId: last.id,
-                    postNumber: last.number,
-                    updatedAt: Date.now(),
-                  }),
-                )
-              } catch {
-                // ignore
-              }
-            }
-          }}
-          className="fixed bottom-6 right-6 z-30 flex items-center gap-1.5 rounded-full border border-border/80 bg-background/95 px-3 py-1.5 text-xs font-semibold text-foreground shadow-lg backdrop-blur-sm transition-all hover:bg-muted hover:border-primary/50 cursor-pointer"
-          title="直达最底部最新周报"
+          onClick={
+            isFromStart
+              ? () => {
+                  const scroller = document.getElementById("forum-content") || document.documentElement
+                  scroller.scrollTo({ top: 0, behavior: "smooth" })
+                }
+              : handleSwitchToStart
+          }
+          disabled={isLoadingStart}
+          className="fixed bottom-6 right-6 z-30 flex items-center gap-1.5 rounded-full border border-primary/30 bg-background/95 px-3.5 py-2 text-xs font-semibold text-primary shadow-lg backdrop-blur-sm transition-all hover:bg-primary hover:text-primary-foreground active:scale-95 cursor-pointer disabled:opacity-50"
+          title={isFromStart ? "回到顶部" : "一键置顶：查询最开始的数据并向下滑动逐步加载"}
         >
-          <ArrowDownToLine className="size-3.5 text-primary" /> 直达最新
+          {isLoadingStart ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <ArrowUpToLine className="size-3.5" />
+          )}
+          <span>{isFromStart ? "回到顶部" : "一键置顶"}</span>
         </button>
       )}
     </div>
@@ -732,10 +887,14 @@ function PostItem({
   p,
   canReply,
   onReplyTo,
+  onHiddenChange,
+  onLikedChange,
 }: {
   p: Post
   canReply?: boolean
   onReplyTo?: (p: Post, quoteText?: string, quoteWholePost?: boolean) => void
+  onHiddenChange?: (postId: number, hidden: boolean) => void
+  onLikedChange?: (postId: number, liked: boolean, likeCount: number, likers?: User[]) => void
 }) {
   const { data: session } = useSession()
   const [params, setParams] = useSearchParams()
@@ -791,6 +950,7 @@ function PostItem({
       return { previousData }
     },
     onSuccess: (res) => {
+      onLikedChange?.(p.id, res.liked, res.likeCount, res.likers)
       qc.setQueriesData<DiscussionDetail>({ queryKey: ["discussion"] }, (old) => {
         if (!old) return old
         return {
@@ -822,7 +982,10 @@ function PostItem({
   })
   const hide = useMutation({
     mutationFn: () => api<{ hidden: boolean }>(`/api/posts/${p.id}/hide`, { method: "POST" }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["discussion"] }),
+    onSuccess: (res) => {
+      onHiddenChange?.(p.id, res.hidden)
+      void qc.invalidateQueries({ queryKey: ["discussion"] })
+    },
     onError: (e) => toast.error((e as Error).message),
   })
 
@@ -894,8 +1057,13 @@ function PostItem({
         )}
         {p.canHide && (
           <button
-            className="inline-flex items-center gap-1 text-muted-foreground hover:text-red-600"
-            onClick={() => hide.mutate()}
+            className="inline-flex items-center gap-1 text-muted-foreground hover:text-red-600 cursor-pointer"
+            onClick={() => {
+              const actionName = p.hidden ? "恢复" : "隐藏"
+              if (window.confirm(`确定${actionName}该帖子内容？`)) {
+                hide.mutate()
+              }
+            }}
           >
             <Flag className="size-3.5" /> {p.hidden ? "恢复" : "隐藏"}
           </button>

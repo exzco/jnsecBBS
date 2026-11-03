@@ -446,6 +446,9 @@ func (s *Server) discussionDetail(c *gin.Context) {
 			break
 		}
 	}
+	if strings.Contains(d.Title, "周报") {
+		isWeekly = true
+	}
 
 	isMod := u != nil && u.IsModerator()
 
@@ -457,18 +460,66 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	var totalComments int64
 	postQuery.Session(&gorm.Session{}).Model(&models.Post{}).Count(&totalComments)
 
+	fromStart := c.Query("from_start") == "1" || c.Query("from_start") == "true"
 	loadAll := c.Query("all") == "1" || c.Query("all") == "true"
 	page := pageParam(c)
-	pages := paginate(int(totalComments), page, perPagePosts)
+
+	// 周报初次点开：无需去数据库查询帖子所有数据，查询近30天的即可，近30天没有就查询近60天，直到有数据
+	isWeeklyRecent := isWeekly && !fromStart && c.Query("page") == ""
 
 	var posts []models.Post
-	if loadAll {
+	windowDays := 0
+	pages := 1
+
+	if isWeeklyRecent {
+		days := 30
+		now := time.Now()
+		for {
+			cutoff := now.AddDate(0, 0, -days)
+			var countInRange int64
+			postQuery.Session(&gorm.Session{}).Model(&models.Post{}).
+				Where("created_at >= ?", cutoff).Count(&countInRange)
+			if countInRange > 0 {
+				windowDays = days
+				postQuery.Session(&gorm.Session{}).
+					Where("created_at >= ?", cutoff).
+					Order("number ASC").
+					Preload("User").
+					Find(&posts)
+				break
+			}
+
+			// 如果近 days 天内没有数据，检查是否已超出该讨论中最早一条有效回复的时间
+			var oldestPost models.Post
+			if err := postQuery.Session(&gorm.Session{}).Order("created_at ASC").First(&oldestPost).Error; err != nil {
+				// 讨论内无评论帖子
+				break
+			}
+			if cutoff.Before(oldestPost.CreatedAt) || days >= 3650 {
+				// 已经回溯至最旧帖子或达到最大范围上限
+				windowDays = days
+				postQuery.Session(&gorm.Session{}).
+					Order("number ASC").
+					Preload("User").
+					Find(&posts)
+				break
+			}
+			days += 30
+		}
+		page = 1
+		pages = 1
+	} else if loadAll && !isWeekly {
 		page = 1
 		pages = 1
 		postQuery.Session(&gorm.Session{}).Order("number ASC").Preload("User").Find(&posts)
 	} else {
-		// 未传 page 参数（默认直接点开帖子）：定位到未读回复页或周报末页，避免从最旧楼层往下翻
-		if c.Query("page") == "" {
+		pageSize := perPagePosts
+		if pp, _ := strconv.Atoi(c.Query("per_page")); pp > 0 && pp <= 100 {
+			pageSize = pp
+		}
+		pages = paginate(int(totalComments), page, pageSize)
+
+		if c.Query("page") == "" && !fromStart {
 			if hasRead && du.LastReadPostNumber != nil && *du.LastReadPostNumber > 0 {
 				lastRead := *du.LastReadPostNumber
 				lastPostNum := int(totalComments)
@@ -479,7 +530,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 					var countBefore int64
 					countQ := postQuery.Session(&gorm.Session{}).Model(&models.Post{}).Where("number <= ?", lastRead)
 					countQ.Count(&countBefore)
-					page = int(countBefore/perPagePosts) + 1
+					page = int(countBefore)/pageSize + 1
 				} else if isWeekly && pages > 1 {
 					page = pages
 				}
@@ -489,7 +540,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		}
 
 		postQuery.Session(&gorm.Session{}).Order("number ASC").
-			Limit(perPagePosts).Offset((page - 1) * perPagePosts).Preload("User").Find(&posts)
+			Limit(pageSize).Offset((page - 1) * pageSize).Preload("User").Find(&posts)
 	}
 
 	// 记录已读进度
@@ -600,6 +651,8 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		"isMod":      isMod && !s.cfg.ReadOnly,
 		"editorTags": editorTags,
 		"viewers":    viewers,
+		"isWeekly":   isWeekly,
+		"windowDays": windowDays,
 	})
 }
 

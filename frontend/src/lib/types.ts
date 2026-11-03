@@ -115,6 +115,8 @@ export interface DiscussionDetail {
   isMod: boolean
   editorTags: Tag[]
   viewers?: DiscussionViewer[]
+  isWeekly?: boolean
+  windowDays?: number
 }
 
 export interface ProfileData {
