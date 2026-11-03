@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { useNavigate } from "react-router"
 import { toast } from "sonner"
@@ -13,9 +13,58 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 
 export default function NewPostPage() {
   const navigate = useNavigate()
-  const [title, setTitle] = useState("")
-  const [content, setContent] = useState("")
-  const [tagIds, setTagIds] = useState<number[]>([])
+  const [title, setTitle] = useState(() => {
+    try {
+      const draft = JSON.parse(localStorage.getItem("bbs_draft_new_post") || "{}")
+      return draft.title || ""
+    } catch {
+      return ""
+    }
+  })
+  const [content, setContent] = useState(() => {
+    try {
+      const draft = JSON.parse(localStorage.getItem("bbs_draft_new_post") || "{}")
+      return draft.content || ""
+    } catch {
+      return ""
+    }
+  })
+  const [tagIds, setTagIds] = useState<number[]>(() => {
+    try {
+      const draft = JSON.parse(localStorage.getItem("bbs_draft_new_post") || "{}")
+      return Array.isArray(draft.tagIds) ? draft.tagIds : []
+    } catch {
+      return []
+    }
+  })
+
+  // 监听输入变动，自动保存草稿至本地缓存
+  useEffect(() => {
+    try {
+      if (title.trim() || content.trim() || tagIds.length > 0) {
+        localStorage.setItem(
+          "bbs_draft_new_post",
+          JSON.stringify({ title, content, tagIds, updatedAt: Date.now() })
+        )
+      } else {
+        localStorage.removeItem("bbs_draft_new_post")
+      }
+    } catch {
+      // ignore
+    }
+  }, [title, content, tagIds])
+
+  const clearDraft = () => {
+    try {
+      localStorage.removeItem("bbs_draft_new_post")
+    } catch {
+      // ignore
+    }
+    setTitle("")
+    setContent("")
+    setTagIds([])
+    toast.info("已清空草稿")
+  }
 
   const { data } = useQuery({
     queryKey: ["postForm"],
@@ -26,6 +75,11 @@ export default function NewPostPage() {
     mutationFn: () => api<{ id: number; url: string }>("/api/discussions", { json: { title, content, tagIds } }),
     onSuccess: (r) => {
       toast.success("发布成功")
+      try {
+        localStorage.removeItem("bbs_draft_new_post")
+      } catch {
+        // ignore
+      }
       void api; // noop 避免移除导入
       navigate(r.url)
     },
@@ -35,6 +89,8 @@ export default function NewPostPage() {
   function toggleTag(id: number) {
     setTagIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
   }
+
+  const hasDraft = Boolean(title.trim() || content.trim() || tagIds.length > 0)
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -97,7 +153,25 @@ export default function NewPostPage() {
             <MarkdownEditor value={content} onChange={setContent} rows={12} />
           </div>
 
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between pt-2">
+            <div className="flex items-center gap-2">
+              {hasDraft && (
+                <>
+                  <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                    已自动保存草稿
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                    onClick={clearDraft}
+                  >
+                    清空草稿
+                  </Button>
+                </>
+              )}
+            </div>
             <Button
               onClick={() => create.mutate()}
               disabled={create.isPending || !title.trim() || !content.trim() || tagIds.length === 0}

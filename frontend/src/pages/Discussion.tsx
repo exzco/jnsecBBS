@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router"
 import {
-  ArrowUpToLine, ChevronLeft, Eye, Flag, Heart, Loader2, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
+  ArrowDownToLine, ArrowUpToLine, ChevronLeft, Eye, Flag, Heart, Loader2, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useSession } from "@/lib/session"
@@ -204,7 +204,36 @@ function DiscussionView({
     }
   }, [data, idSlug, navigate, params, syncUrl])
 
-  const [replyContent, setReplyContent] = useState("")
+  const [replyContent, setReplyContent] = useState(() => {
+    try {
+      return localStorage.getItem(`bbs_draft_reply_${id}`) || ""
+    } catch {
+      return ""
+    }
+  })
+
+  // 当讨论 id 改变时读取对应讨论的回复草稿
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(`bbs_draft_reply_${id}`) || ""
+      setReplyContent(saved)
+    } catch {
+      setReplyContent("")
+    }
+  }, [id])
+
+  // 内容变动时自动保存草稿至本地缓存
+  useEffect(() => {
+    try {
+      if (replyContent.trim()) {
+        localStorage.setItem(`bbs_draft_reply_${id}`, replyContent)
+      } else {
+        localStorage.removeItem(`bbs_draft_reply_${id}`)
+      }
+    } catch {
+      // ignore
+    }
+  }, [replyContent, id])
   const [selectionQuote, setSelectionQuote] = useState<{
     postId: number
     postNumber: number
@@ -325,6 +354,11 @@ function DiscussionView({
       }),
     onSuccess: (r) => {
       toast.success("回复成功")
+      try {
+        localStorage.removeItem(`bbs_draft_reply_${id}`)
+      } catch {
+        // ignore
+      }
       setReplyContent("")
       void qc.invalidateQueries({ queryKey: ["discussion", id] })
       void qc.invalidateQueries({ queryKey: ["me"] })
@@ -415,6 +449,17 @@ function DiscussionView({
     } finally {
       setIsLoadingStart(false)
     }
+  }
+
+  const handleScrollToTop = () => {
+    const scroller = document.getElementById("forum-content") || document.documentElement
+    scroller.scrollTo({ top: 0, behavior: "smooth" })
+  }
+
+  const handleBackToLatest = () => {
+    setIsFromStart(false)
+    const scroller = document.getElementById("forum-content") || document.documentElement
+    scroller.scrollTo({ top: 0, behavior: "smooth" })
   }
 
   const handleLoadMore = async (nextPage: number) => {
@@ -621,47 +666,6 @@ function DiscussionView({
 
       {data.isMod && <ModBar d={d} editorTags={data.editorTags} onAction={mod.mutate} />}
 
-      {isWeeklyDiscussion && !isFromStart && (
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3.5 py-2.5 text-xs text-primary shadow-2xs">
-          <div className="flex items-center gap-1.5 font-medium">
-            <span>
-              已为您加载近 {data.windowDays || 30} 天周报内容（共 {displayPosts.length} 篇）
-            </span>
-          </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 gap-1.5 border-primary/30 bg-background/90 hover:bg-primary hover:text-primary-foreground text-xs font-semibold cursor-pointer shadow-2xs transition-colors"
-            onClick={handleSwitchToStart}
-            disabled={isLoadingStart}
-          >
-            <ArrowUpToLine className="size-3.5" />
-            {isLoadingStart ? "加载中…" : "一键置顶"}
-          </Button>
-        </div>
-      )}
-
-      {isWeeklyDiscussion && isFromStart && (
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/70 bg-muted/40 px-3.5 py-2.5 text-xs text-muted-foreground shadow-2xs">
-          <div className="flex items-center gap-1.5 font-medium text-foreground">
-            <ArrowUpToLine className="size-3.5 text-primary" />
-            <span>已置顶浏览最早周报（往下滑动逐步加载，已加载 {startPosts.length} 篇）</span>
-          </div>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1 text-xs text-primary hover:bg-primary/10 cursor-pointer"
-            onClick={() => {
-              setIsFromStart(false)
-              const scroller = document.getElementById("forum-content") || document.documentElement
-              scroller.scrollTo({ top: 0, behavior: "smooth" })
-            }}
-          >
-            返回最新周报
-          </Button>
-        </div>
-      )}
-
       <section className="flex flex-col">
         {displayPosts.map((p) => (
           <PostItem
@@ -678,7 +682,7 @@ function DiscussionView({
             {isLoadingMore ? (
               <span className="inline-flex items-center gap-1.5 text-primary">
                 <Loader2 className="size-3.5 animate-spin" />
-                正在加载后续周报…
+                正在加载…
               </span>
             ) : startPage < startTotalPages ? (
               <button
@@ -686,10 +690,10 @@ function DiscussionView({
                 onClick={() => handleLoadMore(startPage + 1)}
                 className="text-primary hover:underline cursor-pointer"
               >
-                下滑或点击加载更多 (当前已加载至第 {startPage}/{startTotalPages} 页)
+                下滑或点击加载更多
               </button>
             ) : (
-              <span>已加载全部周报内容（共 {startPosts.length} 篇）</span>
+              <span>已加载全部</span>
             )}
           </div>
         )}
@@ -793,27 +797,34 @@ function DiscussionView({
       )}
 
       {isWeeklyDiscussion && (
-        <button
-          type="button"
-          onClick={
-            isFromStart
-              ? () => {
-                  const scroller = document.getElementById("forum-content") || document.documentElement
-                  scroller.scrollTo({ top: 0, behavior: "smooth" })
-                }
-              : handleSwitchToStart
-          }
-          disabled={isLoadingStart}
-          className="fixed bottom-6 right-6 z-30 flex items-center gap-1.5 rounded-full border border-primary/30 bg-background/95 px-3.5 py-2 text-xs font-semibold text-primary shadow-lg backdrop-blur-sm transition-all hover:bg-primary hover:text-primary-foreground active:scale-95 cursor-pointer disabled:opacity-50"
-          title={isFromStart ? "回到顶部" : "一键置顶：查询最开始的数据并向下滑动逐步加载"}
-        >
-          {isLoadingStart ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <ArrowUpToLine className="size-3.5" />
+        <div className="fixed bottom-6 right-6 z-30 flex items-center gap-2">
+          {isFromStart && (
+            <button
+              type="button"
+              onClick={handleBackToLatest}
+              className="flex items-center gap-1.5 rounded-full border border-border/80 bg-background/95 px-3.5 py-2 text-xs font-semibold text-foreground shadow-lg backdrop-blur-sm transition-all hover:bg-muted hover:border-primary/50 active:scale-95 cursor-pointer"
+              title="返回近期的最新周报"
+            >
+              <ArrowDownToLine className="size-3.5 text-primary" />
+              <span>返回最新周报</span>
+            </button>
           )}
-          <span>{isFromStart ? "回到顶部" : "一键置顶"}</span>
-        </button>
+
+          <button
+            type="button"
+            onClick={isFromStart ? handleScrollToTop : handleSwitchToStart}
+            disabled={isLoadingStart}
+            className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-background/95 px-3.5 py-2 text-xs font-semibold text-primary shadow-lg backdrop-blur-sm transition-all hover:bg-primary hover:text-primary-foreground active:scale-95 cursor-pointer disabled:opacity-50"
+            title={isFromStart ? "回到页面顶部" : "一键置顶并查询最开始的数据逐步向下滑动加载"}
+          >
+            {isLoadingStart ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <ArrowUpToLine className="size-3.5" />
+            )}
+            <span>一键置顶</span>
+          </button>
+        </div>
       )}
     </div>
   )
@@ -1158,7 +1169,14 @@ function ReplyForm({
         placeholder="发表回复…（支持划线快捷引用、Markdown 与 LaTeX，@用户名 可提醒对方）"
       />
       <div className="mt-3 flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">支持划线快捷引用、Markdown 与 LaTeX ($E=mc^2$)</span>
+        <span className="text-xs text-muted-foreground flex items-center gap-2">
+          <span>支持划线快捷引用、Markdown 与 LaTeX ($E=mc^2$)</span>
+          {value.trim() && (
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">
+              已自动保存草稿
+            </span>
+          )}
+        </span>
         <Button type="submit" disabled={submitting || !value.trim()}>
           发表回复
         </Button>
