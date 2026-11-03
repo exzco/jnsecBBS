@@ -474,37 +474,21 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	if isWeeklyRecent {
 		days := 30
 		now := time.Now()
-		for {
+		var latestPost models.Post
+		if err := postQuery.Session(&gorm.Session{}).Order("created_at DESC").First(&latestPost).Error; err == nil {
+			diffDays := int(now.Sub(latestPost.CreatedAt).Hours() / 24)
+			if diffDays >= 30 {
+				days = (diffDays/30 + 1) * 30
+			}
+			windowDays = days
 			cutoff := now.AddDate(0, 0, -days)
-			var countInRange int64
-			postQuery.Session(&gorm.Session{}).Model(&models.Post{}).
-				Where("created_at >= ?", cutoff).Count(&countInRange)
-			if countInRange > 0 {
-				windowDays = days
-				postQuery.Session(&gorm.Session{}).
-					Where("created_at >= ?", cutoff).
-					Order("number ASC").
-					Preload("User").
-					Find(&posts)
-				break
-			}
-
-			// 如果近 days 天内没有数据，检查是否已超出该讨论中最早一条有效回复的时间
-			var oldestPost models.Post
-			if err := postQuery.Session(&gorm.Session{}).Order("created_at ASC").First(&oldestPost).Error; err != nil {
-				// 讨论内无评论帖子
-				break
-			}
-			if cutoff.Before(oldestPost.CreatedAt) || days >= 3650 {
-				// 已经回溯至最旧帖子或达到最大范围上限
-				windowDays = days
-				postQuery.Session(&gorm.Session{}).
-					Order("number ASC").
-					Preload("User").
-					Find(&posts)
-				break
-			}
-			days += 30
+			postQuery.Session(&gorm.Session{}).
+				Where("created_at >= ?", cutoff).
+				Order("number ASC").
+				Preload("User").
+				Find(&posts)
+		} else {
+			windowDays = 30
 		}
 		page = 1
 		pages = 1
@@ -634,7 +618,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 			canReply = false
 		}
 	}
-	var editorTags []TagDTO
+	editorTags := make([]TagDTO, 0)
 	if isMod {
 		for _, t := range s.postableTags(u) {
 			editorTags = append(editorTags, s.tagDTO(&t, u))

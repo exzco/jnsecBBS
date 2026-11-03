@@ -66,7 +66,7 @@ function DiscussionView({
 
   // 2. 监听用户滚动，记忆当前帖子的阅读楼层与位置（持久化到 localStorage）
   useEffect(() => {
-    if (!data || data.posts.length === 0) return
+    if (!data || !data.posts || data.posts.length === 0) return
     const scroller = document.getElementById("forum-content") || document.documentElement
     let timer: ReturnType<typeof setTimeout> | null = null
     const storageKey = `bbs_disc_read_pos_${id}`
@@ -116,11 +116,13 @@ function DiscussionView({
 
   // 3. 打开讨论定位：第一次进入周报直达最底部最新楼层；后续再次进入恢复到之前看到的楼层
   useEffect(() => {
-    if (!data || data.posts.length === 0) return
+    if (!data || !data.posts || data.posts.length === 0) return
 
-    const isWeekly =
-      data.discussion.tags.some((t) => t.name.includes("周报") || t.slug === "weekly") ||
-      data.discussion.title.includes("周报")
+    const isWeekly = Boolean(
+      data.isWeekly ||
+      data.discussion?.tags?.some((t) => t.name.includes("周报") || t.slug === "weekly") ||
+      data.discussion?.title?.includes("周报")
+    )
 
     const scroller = document.getElementById("forum-content") || document.documentElement
     const storageKey = `bbs_disc_read_pos_${id}`
@@ -381,40 +383,6 @@ function DiscussionView({
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [titleInput, setTitleInput] = useState("")
 
-  const mod = useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
-      api(`/api/discussions/${id}/mod`, { json: body }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["discussion", id] })
-      void qc.invalidateQueries({ queryKey: ["tagDiscussions"] })
-      void qc.invalidateQueries({ queryKey: ["home"] })
-    },
-    onError: (e) => toast.error((e as Error).message),
-  })
-
-  if (isError) {
-    return (
-      <div className="py-20 text-center">
-        <h1 className="text-xl font-bold">{(error as Error).message}</h1>
-        <Button asChild variant="link">
-          <Link to="/">返回首页</Link>
-        </Button>
-      </div>
-    )
-  }
-  if (!data) {
-    return <div className="py-20 text-center text-muted-foreground">加载中…</div>
-  }
-
-  const d = data.discussion
-  const isAuthor = Boolean(session?.user && d.author && session.user.id === d.author.id)
-  const canEditTitle = Boolean(data.isMod || isAuthor)
-  const isWeeklyDiscussion = Boolean(
-    data.isWeekly ||
-    d.tags.some((t) => t.name.includes("周报") || t.slug === "weekly") ||
-    d.title.includes("周报")
-  )
-
   const [isFromStart, setIsFromStart] = useState(false)
   const [startPosts, setStartPosts] = useState<Post[]>([])
   const [startPage, setStartPage] = useState(1)
@@ -435,9 +403,9 @@ function DiscussionView({
     setIsLoadingStart(true)
     try {
       const res = await api<DiscussionDetail>(`/api/discussions/${id}?from_start=1&page=1&per_page=20`)
-      setStartPosts(res.posts)
-      setStartPage(res.page.page)
-      setStartTotalPages(res.page.pages)
+      setStartPosts(res.posts || [])
+      setStartPage(res.page?.page || 1)
+      setStartTotalPages(res.page?.pages || 1)
       setIsFromStart(true)
       const scroller = document.getElementById("forum-content") || document.documentElement
       scroller.scrollTo({ top: 0, behavior: "smooth" })
@@ -456,11 +424,11 @@ function DiscussionView({
       const res = await api<DiscussionDetail>(`/api/discussions/${id}?from_start=1&page=${nextPage}&per_page=20`)
       setStartPosts((prev) => {
         const existingIds = new Set(prev.map((p) => p.id))
-        const newPosts = res.posts.filter((p) => !existingIds.has(p.id))
+        const newPosts = (res.posts || []).filter((p) => !existingIds.has(p.id))
         return [...prev, ...newPosts]
       })
-      setStartPage(res.page.page)
-      setStartTotalPages(res.page.pages)
+      setStartPage(res.page?.page || nextPage)
+      setStartTotalPages(res.page?.pages || startTotalPages)
     } catch (e) {
       toast.error("加载更多数据失败: " + (e as Error).message)
     } finally {
@@ -503,7 +471,41 @@ function DiscussionView({
     }
   }
 
-  const displayPosts = isFromStart ? startPosts : data.posts
+  const mod = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api(`/api/discussions/${id}/mod`, { json: body }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["discussion", id] })
+      void qc.invalidateQueries({ queryKey: ["tagDiscussions"] })
+      void qc.invalidateQueries({ queryKey: ["home"] })
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
+  if (isError) {
+    return (
+      <div className="py-20 text-center">
+        <h1 className="text-xl font-bold">{(error as Error).message}</h1>
+        <Button asChild variant="link">
+          <Link to="/">返回首页</Link>
+        </Button>
+      </div>
+    )
+  }
+  if (!data) {
+    return <div className="py-20 text-center text-muted-foreground">加载中…</div>
+  }
+
+  const d = data.discussion
+  const isAuthor = Boolean(session?.user && d.author && session.user.id === d.author.id)
+  const canEditTitle = Boolean(data.isMod || isAuthor)
+  const isWeeklyDiscussion = Boolean(
+    data.isWeekly ||
+    d.tags?.some((t) => t.name.includes("周报") || t.slug === "weekly") ||
+    d.title.includes("周报")
+  )
+
+  const displayPosts = isFromStart ? startPosts : (data.posts || [])
 
   const handleSaveTitle = () => {
     const clean = titleInput.trim()
@@ -512,7 +514,7 @@ function DiscussionView({
       return
     }
     mod.mutate(
-      { action: "edit_meta", title: clean, tagIds: d.tags.map((t) => t.id) },
+      { action: "edit_meta", title: clean, tagIds: (d.tags || []).map((t) => t.id) },
       {
         onSuccess: () => {
           setIsEditingTitle(false)
@@ -522,7 +524,7 @@ function DiscussionView({
     )
   }
 
-  const uniqueTags = Array.from(new Map(d.tags.map((t) => [t.id, t])).values())
+  const uniqueTags = Array.from(new Map((d.tags || []).map((t) => [t.id, t])).values())
 
   return (
     <div id="discussion-top">
@@ -826,14 +828,14 @@ function ModBar({
 }) {
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(d.title)
-  const [tagIds, setTagIds] = useState<number[]>(() => Array.from(new Set(d.tags.map((t) => t.id))))
+  const [tagIds, setTagIds] = useState<number[]>(() => Array.from(new Set((d.tags || []).map((t) => t.id))))
 
   useEffect(() => {
     setTitle(d.title)
-    setTagIds(Array.from(new Set(d.tags.map((t) => t.id))))
+    setTagIds(Array.from(new Set((d.tags || []).map((t) => t.id))))
   }, [d.title, d.tags])
 
-  const uniqueEditorTags = Array.from(new Map(editorTags.map((t) => [t.id, t])).values())
+  const uniqueEditorTags = Array.from(new Map((editorTags || []).map((t) => [t.id, t])).values())
 
   function toggleTag(tid: number) {
     setTagIds((cur) => (cur.includes(tid) ? cur.filter((x) => x !== tid) : [...cur, tid]))
