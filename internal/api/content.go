@@ -460,18 +460,38 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	var totalComments int64
 	postQuery.Session(&gorm.Session{}).Model(&models.Post{}).Count(&totalComments)
 
+	beforeNumber, _ := strconv.Atoi(c.Query("before_number"))
 	fromStart := c.Query("from_start") == "1" || c.Query("from_start") == "true"
 	loadAll := c.Query("all") == "1" || c.Query("all") == "true"
 	page := pageParam(c)
 
 	// 周报初次点开：无需去数据库查询帖子所有数据，查询近30天的即可，近30天没有就查询近60天，直到有数据
-	isWeeklyRecent := isWeekly && !fromStart && c.Query("page") == ""
+	isWeeklyRecent := isWeekly && !fromStart && c.Query("page") == "" && beforeNumber <= 0
 
 	var posts []models.Post
 	windowDays := 0
 	pages := 1
 
-	if isWeeklyRecent {
+	if beforeNumber > 0 {
+		pageSize := perPagePosts
+		if pp, _ := strconv.Atoi(c.Query("per_page")); pp > 0 && pp <= 100 {
+			pageSize = pp
+		}
+		var olderPosts []models.Post
+		postQuery.Session(&gorm.Session{}).
+			Where("number < ?", beforeNumber).
+			Order("number DESC").
+			Limit(pageSize).
+			Preload("User").
+			Find(&olderPosts)
+
+		posts = make([]models.Post, len(olderPosts))
+		for i, p := range olderPosts {
+			posts[len(olderPosts)-1-i] = p
+		}
+		page = 1
+		pages = 1
+	} else if isWeeklyRecent {
 		days := 30
 		now := time.Now()
 		var latestPost models.Post

@@ -154,6 +154,25 @@ func TestWeeklyDiscussionRecentAndFromStart(t *testing.T) {
 		t.Fatalf("expected page 2 with posts 6..10, got %+v", resPage2)
 	}
 
+	// 4. 测试往上翻时向上加载更早数据 (before_number=11&per_page=5)
+	wBefore := httptest.NewRecorder()
+	reqBefore := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d?before_number=11&per_page=5", disc.ID), nil)
+	router.ServeHTTP(wBefore, reqBefore)
+	if wBefore.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", wBefore.Code)
+	}
+	var resBefore struct {
+		Posts []struct {
+			Number int `json:"number"`
+		} `json:"posts"`
+	}
+	if err := json.Unmarshal(wBefore.Body.Bytes(), &resBefore); err != nil {
+		t.Fatal(err)
+	}
+	if len(resBefore.Posts) != 5 || resBefore.Posts[0].Number != 6 || resBefore.Posts[4].Number != 10 {
+		t.Fatalf("expected older posts 6..10 for before_number=11, got %+v", resBefore.Posts)
+	}
+
 	// Verify subsequent /api/recent returns hasUnread = false
 	wRecent := httptest.NewRecorder()
 	reqRecent := httptest.NewRequest(http.MethodGet, "/api/recent", nil)

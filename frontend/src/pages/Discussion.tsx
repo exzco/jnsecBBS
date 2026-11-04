@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router"
 import {
-  ArrowDownToLine, ArrowUpToLine, ChevronLeft, Eye, Flag, Heart, Loader2, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
+  ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronLeft, Eye, Flag, Heart, Loader2, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useSession } from "@/lib/session"
@@ -424,13 +424,113 @@ function DiscussionView({
   const [isLoadingStart, setIsLoadingStart] = useState(false)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
 
-  // 当讨论切换时重置从头加载状态
+  // 向上滚动加载更早历史周报状态
+  const [recentPosts, setRecentPosts] = useState<Post[]>([])
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false)
+  const [hasLoadedAllOlder, setHasLoadedAllOlder] = useState(false)
+  const scrollAdjustRef = useRef<{ prevHeight: number; prevTop: number } | null>(null)
+
+  // 当讨论切换时重置状态
   useEffect(() => {
     setIsFromStart(false)
     setStartPosts([])
     setStartPage(1)
     setStartTotalPages(1)
+    setRecentPosts([])
+    setIsLoadingOlder(false)
+    setHasLoadedAllOlder(false)
+    scrollAdjustRef.current = null
   }, [id])
+
+  // 当接口初始数据或背景刷新返回时，同步合并 recentPosts
+  useEffect(() => {
+    if (!data?.posts) return
+    setRecentPosts((prev) => {
+      if (prev.length === 0) return data.posts
+      const existingMap = new Map(prev.map((p) => [p.id, p]))
+      for (const p of data.posts) {
+        existingMap.set(p.id, p)
+      }
+      const merged = Array.from(existingMap.values())
+      merged.sort((a, b) => a.number - b.number)
+      return merged
+    })
+  }, [data?.posts])
+
+  // 向上加载数据后校准滚动高度，防止视口跳跃
+  useLayoutEffect(() => {
+    if (!scrollAdjustRef.current) return
+    const { prevHeight, prevTop } = scrollAdjustRef.current
+    scrollAdjustRef.current = null
+    const scroller = document.getElementById("forum-content") || document.documentElement
+    const diff = scroller.scrollHeight - prevHeight
+    if (diff > 0) {
+      scroller.scrollTop = prevTop + diff
+    }
+  }, [recentPosts])
+
+  const handleLoadOlder = async () => {
+    if (isLoadingOlder || hasLoadedAllOlder) return
+    const currentPosts = recentPosts.length > 0 ? recentPosts : (data?.posts || [])
+    const topPost = currentPosts[0]
+    if (!topPost || topPost.number <= 1) {
+      setHasLoadedAllOlder(true)
+      return
+    }
+    setIsLoadingOlder(true)
+    try {
+      const scroller = document.getElementById("forum-content") || document.documentElement
+      scrollAdjustRef.current = {
+        prevHeight: scroller.scrollHeight,
+        prevTop: scroller.scrollTop,
+      }
+      const res = await api<DiscussionDetail>(`/api/discussions/${id}?before_number=${topPost.number}&per_page=20`)
+      const olderPosts = res.posts || []
+      if (olderPosts.length === 0) {
+        setHasLoadedAllOlder(true)
+        scrollAdjustRef.current = null
+        return
+      }
+      if (olderPosts[0].number <= 1) {
+        setHasLoadedAllOlder(true)
+      }
+      setRecentPosts((prev) => {
+        const base = prev.length > 0 ? prev : (data?.posts || [])
+        const existingIds = new Set(base.map((p) => p.id))
+        const fresh = olderPosts.filter((p) => !existingIds.has(p.id))
+        return [...fresh, ...base]
+      })
+    } catch (e) {
+      scrollAdjustRef.current = null
+      toast.error("加载更早周报失败: " + (e as Error).message)
+    } finally {
+      setIsLoadingOlder(false)
+    }
+  }
+
+  // 往上翻监听：当滚动到靠顶部区域时自动向上加载更早历史周报
+  useEffect(() => {
+    if (isFromStart || hasLoadedAllOlder) return
+    const isWeekly = Boolean(
+      data?.isWeekly ||
+      data?.discussion?.tags?.some((t) => t.name.includes("周报") || t.slug === "weekly") ||
+      data?.discussion?.title?.includes("周报")
+    )
+    if (!isWeekly) return
+
+    const scroller = document.getElementById("forum-content") || document.documentElement
+
+    const onScroll = () => {
+      if (isLoadingOlder || hasLoadedAllOlder) return
+      const scrollTop = scroller.scrollTop || document.documentElement.scrollTop
+      if (scrollTop < 150) {
+        void handleLoadOlder()
+      }
+    }
+
+    scroller.addEventListener("scroll", onScroll, { passive: true })
+    return () => scroller.removeEventListener("scroll", onScroll)
+  }, [data?.isWeekly, data?.discussion, isFromStart, hasLoadedAllOlder, isLoadingOlder, recentPosts, data?.posts, id])
 
   const handleSwitchToStart = async () => {
     if (isLoadingStart) return
@@ -505,12 +605,18 @@ function DiscussionView({
   const handlePostHidden = (postId: number, hidden: boolean) => {
     if (isFromStart) {
       setStartPosts((prev) => prev.map((item) => (item.id === postId ? { ...item, hidden } : item)))
+    } else {
+      setRecentPosts((prev) => prev.map((item) => (item.id === postId ? { ...item, hidden } : item)))
     }
   }
 
   const handlePostLiked = (postId: number, liked: boolean, likeCount: number, likers?: User[]) => {
     if (isFromStart) {
       setStartPosts((prev) =>
+        prev.map((item) => (item.id === postId ? { ...item, liked, likeCount, likers: likers || item.likers } : item))
+      )
+    } else {
+      setRecentPosts((prev) =>
         prev.map((item) => (item.id === postId ? { ...item, liked, likeCount, likers: likers || item.likers } : item))
       )
     }
@@ -550,7 +656,11 @@ function DiscussionView({
     d.title.includes("周报")
   )
 
-  const displayPosts = isFromStart ? startPosts : (data.posts || [])
+  const displayPosts = isFromStart ? startPosts : (recentPosts.length > 0 ? recentPosts : (data.posts || []))
+  const firstPostNumber = displayPosts[0]?.number
+  const hasOlderPosts = Boolean(
+    isWeeklyDiscussion && !isFromStart && firstPostNumber && firstPostNumber > 1 && !hasLoadedAllOlder
+  )
 
   const handleSaveTitle = () => {
     const clean = titleInput.trim()
@@ -667,6 +777,28 @@ function DiscussionView({
       {data.isMod && <ModBar d={d} editorTags={data.editorTags} onAction={mod.mutate} />}
 
       <section className="flex flex-col">
+        {isWeeklyDiscussion && !isFromStart && (
+          <div className="py-2.5 text-center text-xs text-muted-foreground border-b border-border/40 mb-2">
+            {isLoadingOlder ? (
+              <span className="inline-flex items-center gap-1.5 text-primary">
+                <Loader2 className="size-3.5 animate-spin" />
+                正在加载更早周报…
+              </span>
+            ) : hasOlderPosts ? (
+              <button
+                type="button"
+                onClick={handleLoadOlder}
+                className="inline-flex items-center gap-1.5 text-primary hover:underline cursor-pointer font-medium py-1 px-3 rounded-full hover:bg-muted/60 transition-colors"
+              >
+                <ArrowUp className="size-3.5" />
+                <span>往上翻或点击加载更早周报</span>
+              </button>
+            ) : (
+              <span className="text-muted-foreground/70">已至最早周报</span>
+            )}
+          </div>
+        )}
+
         {displayPosts.map((p) => (
           <PostItem
             key={p.id}
@@ -769,7 +901,7 @@ function DiscussionView({
                 toast.error(d.isLocked ? "该帖子已被锁定，无法回复" : "请登录后参与讨论")
                 return
               }
-              const post = data.posts.find((x) => x.id === selectionQuote.postId)
+              const post = displayPosts.find((x) => x.id === selectionQuote.postId)
               if (post) {
                 handleReplyTo(post, selectionQuote.text)
               } else {
