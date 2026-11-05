@@ -1,7 +1,7 @@
 FROM node:22-alpine AS frontend
 WORKDIR /src/frontend
-COPY frontend/package.json frontend/bunfig.toml ./
-RUN npm install --legacy-peer-deps --registry=https://registry.npmmirror.com
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --registry=https://registry.npmmirror.com || npm install --legacy-peer-deps --registry=https://registry.npmmirror.com
 COPY frontend/ ./
 RUN npm run build
 

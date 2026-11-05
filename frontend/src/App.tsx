@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Navbar } from "@/components/Navbar"
-import { ForumLayout } from "@/components/ForumLayout"
+import { ForumLayout, MiddleColumnSkeleton } from "@/components/ForumLayout"
 import { useSession } from "@/lib/session"
 import { Button } from "@/components/ui/button"
 import { cn } from "cn"
@@ -50,7 +50,7 @@ function TagRedirect() {
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { data, isLoading } = useSession()
   const location = useLocation()
-  if (isLoading) return <div className="py-20 text-center text-muted-foreground">加载中…</div>
+  if (isLoading) return <MiddleColumnSkeleton />
   if (!data?.user) {
     return <Navigate to="/login" state={{ from: location.pathname + location.search }} replace />
   }
@@ -98,28 +98,26 @@ function Shell() {
             <a href="/switch-to-old" className="ml-2 font-medium text-primary underline underline-offset-2">前往旧站发布或修改</a>
           </div>
         )}
-        <Suspense fallback={<div className="py-20 text-center text-muted-foreground">加载中…</div>}>
-          <Routes>
-            {/* 统一三栏社区容器：首页、详情、发帖、编辑、个人主页、设置、通知、搜索 */}
-            <Route element={<ForumLayout />}>
-              <Route path="/" element={<RequireAuth><HomePage /></RequireAuth>} />
-              <Route path="/t/:slug" element={<RequireAuth><TagRedirect /></RequireAuth>} />
-              <Route path="/d/:idSlug" element={<RequireAuth><DiscussionPage /></RequireAuth>} />
-              <Route path="/post" element={<RequireAuth><RequireWritable><NewPostPage /></RequireWritable></RequireAuth>} />
-              <Route path="/posts/:id/edit" element={<RequireAuth><RequireWritable><EditPostPage /></RequireWritable></RequireAuth>} />
-              <Route path="/u/:username" element={<RequireAuth><ProfilePage /></RequireAuth>} />
-              <Route path="/settings" element={<RequireAuth><RequireWritable><SettingsPage /></RequireWritable></RequireAuth>} />
-              <Route path="/notifications" element={<RequireAuth><NotificationsPage /></RequireAuth>} />
-              <Route path="/search" element={<RequireAuth><SearchPage /></RequireAuth>} />
-            </Route>
+        <Routes>
+          {/* 统一三栏社区容器：首页、详情、发帖、编辑、个人主页、设置、通知、搜索 */}
+          <Route element={<ForumLayout />}>
+            <Route path="/" element={<RequireAuth><HomePage /></RequireAuth>} />
+            <Route path="/t/:slug" element={<RequireAuth><TagRedirect /></RequireAuth>} />
+            <Route path="/d/:idSlug" element={<RequireAuth><DiscussionPage /></RequireAuth>} />
+            <Route path="/post" element={<RequireAuth><RequireWritable><NewPostPage /></RequireWritable></RequireAuth>} />
+            <Route path="/posts/:id/edit" element={<RequireAuth><RequireWritable><EditPostPage /></RequireWritable></RequireAuth>} />
+            <Route path="/u/:username" element={<RequireAuth><ProfilePage /></RequireAuth>} />
+            <Route path="/settings" element={<RequireAuth><RequireWritable><SettingsPage /></RequireWritable></RequireAuth>} />
+            <Route path="/notifications" element={<RequireAuth><NotificationsPage /></RequireAuth>} />
+            <Route path="/search" element={<RequireAuth><SearchPage /></RequireAuth>} />
+          </Route>
 
-            {/* 独立认证与管理全屏页面 */}
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/register" element={<RequireWritable><RegisterPage /></RequireWritable>} />
-            <Route path="/admin" element={<RequireAdmin><RequireWritable><AdminPage /></RequireWritable></RequireAdmin>} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </Suspense>
+          {/* 独立认证与管理全屏页面 */}
+          <Route path="/login" element={<Suspense fallback={<div className="py-20 text-center text-muted-foreground">加载中…</div>}><LoginPage /></Suspense>} />
+          <Route path="/register" element={<Suspense fallback={<div className="py-20 text-center text-muted-foreground">加载中…</div>}><RequireWritable><RegisterPage /></RequireWritable></Suspense>} />
+          <Route path="/admin" element={<Suspense fallback={<div className="py-20 text-center text-muted-foreground">加载中…</div>}><RequireAdmin><RequireWritable><AdminPage /></RequireWritable></RequireAdmin></Suspense>} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
       </main>
     </div>
   )

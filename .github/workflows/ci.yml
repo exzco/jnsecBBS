@@ -7,7 +7,7 @@ on:
 
 jobs:
   go:
-    name: Go（fmt / vet / test）
+    name: Gofmt / vet / race / test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,25 +32,31 @@ jobs:
         run: go test -race -count=1 ./...
 
   frontend:
-    name: Frontend（bun 构建校验）
+    name: npm 构建校验
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: 安装依赖
+      - name: npm ci
         working-directory: frontend
-        run: bun install --frozen-lockfile
+        run: npm ci
 
-      - name: 构建校验（tsc 类型检查 + vite 打包）
+      - name: lint
         working-directory: frontend
-        run: bun run build
+        run: npm run lint
+
+      - name: tsc + vite 
+        working-directory: frontend
+        run: npm run build
 
   deploy:
-    name: 服务部署
+    name: vps deploy
     needs: [go, frontend]
     if: >-
       github.event_name == 'push' &&
@@ -68,7 +74,7 @@ jobs:
       group: deploy-production
       cancel-in-progress: false
     steps:
-      - name: 检查部署 Secrets
+      - name:  Secrets check
         id: creds
         run: |
           if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USER }}" ] || [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then

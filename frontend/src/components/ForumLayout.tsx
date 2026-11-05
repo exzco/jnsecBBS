@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { Link, Outlet, useLocation, useNavigate, useSearchParams } from "react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Compass, Layers, MessageSquare, Plus, Search, Sparkles } from "lucide-react"
@@ -18,6 +18,32 @@ interface WeeklyDiscussionItem {
   replyCount: number
   hasUnread?: boolean
   author?: { username: string }
+}
+
+export function MiddleColumnSkeleton() {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between rounded-xl border border-border/70 bg-card p-4 shadow-xs">
+        <Skeleton className="h-6 w-32 rounded-md" />
+        <Skeleton className="h-5 w-16 rounded-full" />
+      </div>
+      <div className="space-y-3">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="rounded-xl border border-border/60 bg-card p-4 space-y-2.5 shadow-xs">
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-5 w-2/5 rounded-md" />
+              <Skeleton className="h-4 w-16 rounded-md" />
+            </div>
+            <Skeleton className="h-4 w-4/5 rounded-md" />
+            <div className="flex items-center gap-3 pt-1">
+              <Skeleton className="h-3 w-20 rounded-md" />
+              <Skeleton className="h-3 w-16 rounded-md" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function WeeklyDiscussionsList({
@@ -289,10 +315,16 @@ export function ForumLayout() {
               <span className="flex items-center gap-1.5">
                 <Layers className="size-3.5" /> 版块分类
               </span>
-              <span className="text-[11px] font-normal">{boards.length} 个版块</span>
+              <span className="text-[11px] font-normal">
+                {sessionLoading || homeLoading ? (
+                  <Skeleton className="inline-block h-3.5 w-10 align-middle" />
+                ) : (
+                  `${boards.length} 个版块`
+                )}
+              </span>
             </div>
 
-            {homeLoading ? (
+            {homeLoading || sessionLoading ? (
               <div className="space-y-2 p-1">
                 {Array.from({ length: 6 }).map((_, i) => (
                   <Skeleton key={i} className="h-9 rounded-lg" />
@@ -455,7 +487,9 @@ export function ForumLayout() {
           aria-label="内容板块"
           className="min-w-0 flex-1 h-full min-h-0 overflow-y-auto pr-1 sm:pr-2 pb-24 sm:pb-8 [scrollbar-gutter:stable] overscroll-contain"
         >
-          <Outlet />
+          <Suspense fallback={<MiddleColumnSkeleton />}>
+            <Outlet />
+          </Suspense>
         </section>
 
         {/* ==================== 3. 右栏：最右侧是最新的帖子（固定视口不随主内容滚动） ==================== */}
@@ -469,7 +503,7 @@ export function ForumLayout() {
               <span className="text-[11px] text-muted-foreground">全站动态</span>
             </div>
 
-            {sidebar.isLoading ? (
+            {sidebar.isLoading || sessionLoading ? (
               <div className="space-y-3 p-3">
                 {Array.from({ length: 5 }).map((_, i) => (
                   <Skeleton key={i} className="h-12 rounded-lg" />

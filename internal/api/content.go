@@ -153,7 +153,7 @@ func (s *Server) userActivity(c *gin.Context) {
 	start := time.Date(year, 1, 1, 0, 0, 0, 0, cst).UTC()
 	end := time.Date(year+1, 1, 1, 0, 0, 0, 0, cst).UTC()
 
-	canSeeHidden := viewer != nil && viewer.IsModerator()
+	canSeeHidden := viewer.IsModerator()
 	dq := s.visibleDiscussions(viewer).
 		Where("flarum_discussions.user_id = ? AND flarum_discussions.created_at >= ? AND flarum_discussions.created_at < ?", p.ID, start, end)
 	pq := s.visiblePosts(viewer).
@@ -400,7 +400,7 @@ func (s *Server) loadDiscussion(c *gin.Context, id uint) (*models.Discussion, *m
 			return nil, nil, false
 		}
 	}
-	isMod := u != nil && u.IsModerator()
+	isMod := u.IsModerator()
 	if d.HiddenAt != nil && !isMod {
 		fail(c, http.StatusNotFound, "该帖子不存在或已被删除。")
 		return nil, nil, false
@@ -434,10 +434,8 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	}
 	var du models.DiscussionUser
 	hasRead := false
-	if u != nil {
-		if err := s.db.Where("user_id = ? AND discussion_id = ?", u.ID, d.ID).First(&du).Error; err == nil {
-			hasRead = true
-		}
+	if err := s.db.Where("user_id = ? AND discussion_id = ?", u.ID, d.ID).First(&du).Error; err == nil {
+		hasRead = true
 	}
 	isWeekly := false
 	for _, t := range d.Tags {
@@ -450,7 +448,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		isWeekly = true
 	}
 
-	isMod := u != nil && u.IsModerator()
+	isMod := u.IsModerator()
 
 	postQuery := s.db.Where("discussion_id = ? AND type = ? AND is_approved = ? AND is_private = ?", d.ID, "comment", true, false)
 	if !isMod {
@@ -548,7 +546,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 	}
 
 	// 记录已读进度
-	if u != nil && len(posts) > 0 {
+	if len(posts) > 0 {
 		maxNumber := 0
 		for _, p := range posts {
 			if p.Number != nil && *p.Number > maxNumber {
@@ -592,19 +590,11 @@ func (s *Server) discussionDetail(c *gin.Context) {
 			clientIP = clientIP[:16]
 		}
 		var recentCount int64
-		q := s.db.Model(&models.DiscussionView{}).Where("discussion_id = ? AND visited_at >= ?", d.ID, threshold)
-		if u != nil {
-			q = q.Where("user_id = ?", u.ID)
-		} else {
-			q = q.Where("user_id IS NULL AND ip = ?", clientIP)
-		}
+		q := s.db.Model(&models.DiscussionView{}).Where("discussion_id = ? AND visited_at >= ? AND user_id = ?", d.ID, threshold, u.ID)
 		_ = q.Count(&recentCount).Error
 
 		if recentCount == 0 {
-			var uid *uint
-			if u != nil {
-				uid = &u.ID
-			}
+			uid := &u.ID
 			_ = s.db.Create(&models.DiscussionView{
 				UserID:       uid,
 				DiscussionID: d.ID,
@@ -613,7 +603,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 			}).Error
 			_ = s.db.Model(&models.Discussion{}).Where("id = ?", d.ID).UpdateColumn("view_count", gorm.Expr("view_count + 1")).Error
 			d.ViewCount++
-		} else if u != nil {
+		} else {
 			_ = s.db.Model(&models.DiscussionView{}).
 				Where("discussion_id = ? AND user_id = ?", d.ID, u.ID).
 				Order("id DESC").Limit(1).
@@ -632,7 +622,7 @@ func (s *Server) discussionDetail(c *gin.Context) {
 		dto.Discussion.Slug = d.Slug()
 		views = append(views, dto)
 	}
-	canReply := !s.cfg.ReadOnly && u != nil && !d.IsLocked
+	canReply := !s.cfg.ReadOnly && !d.IsLocked
 	for _, t := range d.Tags {
 		if !auth.CanReplyTag(u, &t) {
 			canReply = false
@@ -1058,10 +1048,6 @@ func (s *Server) loadPost(c *gin.Context) (*models.Post, *models.User, bool) {
 		return nil, nil, false
 	}
 	u := s.currentUser(c)
-	if u == nil {
-		fail(c, http.StatusUnauthorized, "请先登录。")
-		return nil, nil, false
-	}
 	var d models.Discussion
 	if err := s.visibleDiscussions(u).Preload("Tags").First(&d, p.DiscussionID).Error; err != nil {
 		fail(c, http.StatusNotFound, "该帖子不存在。")
@@ -1245,7 +1231,7 @@ func (s *Server) profile(c *gin.Context) {
 		return
 	}
 	viewer := s.currentUser(c)
-	canSeeHidden := viewer != nil && viewer.IsModerator()
+	canSeeHidden := viewer.IsModerator()
 	dQuery := s.visibleDiscussions(viewer).Where("flarum_discussions.user_id = ?", p.ID)
 	if !canSeeHidden {
 		dQuery = dQuery.Where("flarum_discussions.hidden_at IS NULL AND flarum_discussions.is_approved = 1")
@@ -1350,10 +1336,6 @@ func (s *Server) upload(c *gin.Context) {
 		return
 	}
 	u := s.currentUser(c)
-	if u == nil {
-		fail(c, http.StatusUnauthorized, "请先登录。")
-		return
-	}
 	fh, err := c.FormFile("file")
 	if err != nil {
 		fail(c, http.StatusBadRequest, "请选择要上传的文件。")

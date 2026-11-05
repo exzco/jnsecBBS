@@ -23,7 +23,7 @@ import { toast } from "sonner"
 // 左侧提供「返回主页」按钮并配置 Tooltip 消除歧义；
 // 移动端优化响应式布局，支持移动端紧凑搜索条展开，精简图标展示。
 export function Navbar({ siteName }: { siteName: string }) {
-  const { data: session } = useSession()
+  const { data: session, isLoading: sessionLoading } = useSession()
   const user = session?.user ?? null
   const { data: unread = 0 } = useUnread(!!user)
   const [q, setQ] = useState("")
@@ -180,7 +180,11 @@ export function Navbar({ siteName }: { siteName: string }) {
                 </TooltipContent>
               </Tooltip>
 
-              {user ? (
+              {sessionLoading ? (
+                <div className="flex items-center gap-2">
+                  <div className="size-7 sm:size-8 rounded-full bg-white/20 animate-pulse" />
+                </div>
+              ) : user ? (
                 <>
                   {/* 发帖按钮（仅大屏） */}
                   {!session?.readOnly && (

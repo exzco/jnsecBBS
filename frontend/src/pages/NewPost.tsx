@@ -11,32 +11,29 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 
+function loadDraft() {
+  try {
+    const raw = localStorage.getItem("bbs_draft_new_post")
+    if (raw) {
+      const d = JSON.parse(raw)
+      return {
+        title: typeof d.title === "string" ? d.title : "",
+        content: typeof d.content === "string" ? d.content : "",
+        tagIds: Array.isArray(d.tagIds) ? d.tagIds : [],
+      }
+    }
+  } catch {
+    // ignore storage error
+  }
+  return { title: "", content: "", tagIds: [] }
+}
+
 export default function NewPostPage() {
   const navigate = useNavigate()
-  const [title, setTitle] = useState(() => {
-    try {
-      const draft = JSON.parse(localStorage.getItem("bbs_draft_new_post") || "{}")
-      return draft.title || ""
-    } catch {
-      return ""
-    }
-  })
-  const [content, setContent] = useState(() => {
-    try {
-      const draft = JSON.parse(localStorage.getItem("bbs_draft_new_post") || "{}")
-      return draft.content || ""
-    } catch {
-      return ""
-    }
-  })
-  const [tagIds, setTagIds] = useState<number[]>(() => {
-    try {
-      const draft = JSON.parse(localStorage.getItem("bbs_draft_new_post") || "{}")
-      return Array.isArray(draft.tagIds) ? draft.tagIds : []
-    } catch {
-      return []
-    }
-  })
+  const [initialDraft] = useState(loadDraft)
+  const [title, setTitle] = useState(initialDraft.title)
+  const [content, setContent] = useState(initialDraft.content)
+  const [tagIds, setTagIds] = useState<number[]>(initialDraft.tagIds)
 
   // 监听输入变动，自动保存草稿至本地缓存
   useEffect(() => {
@@ -80,7 +77,6 @@ export default function NewPostPage() {
       } catch {
         // ignore
       }
-      void api; // noop 避免移除导入
       navigate(r.url)
     },
     onError: (e) => toast.error((e as Error).message),

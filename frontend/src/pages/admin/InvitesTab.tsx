@@ -25,10 +25,14 @@ export function InvitesTab() {
       api<{ codes: string[] }>("/api/admin/invites", {
         json: { count: Number(count) || 1, expiresDays: Number(days) || 0 },
       }),
-    onSuccess: (r) => {
+    onSuccess: async (r) => {
       void qc.invalidateQueries({ queryKey: ["adminInvites"] })
-      void navigator.clipboard?.writeText(r.codes.join("\n")).catch(() => {})
-      toast.success(`已生成 ${r.codes.length} 个邀请码（已复制）`)
+      try {
+        await navigator.clipboard.writeText(r.codes.join("\n"))
+        toast.success(`已生成 ${r.codes.length} 个邀请码（已复制）`)
+      } catch {
+        toast.success(`已生成 ${r.codes.length} 个邀请码（请手动复制）`)
+      }
     },
     onError: (e) => toast.error((e as Error).message),
   })

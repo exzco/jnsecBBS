@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -324,7 +326,12 @@ func (s *Server) adminInviteCreate(c *gin.Context) {
 		Count       int `json:"count"`
 		ExpiresDays int `json:"expiresDays"`
 	}
-	_ = c.ShouldBindJSON(&body)
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+			fail(c, http.StatusBadRequest, "请求格式错误。")
+			return
+		}
+	}
 	n := body.Count
 	if n <= 0 || n > 50 {
 		n = 1

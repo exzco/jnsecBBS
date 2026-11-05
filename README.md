@@ -1,14 +1,16 @@
-# issue 
+# jnsecBBS
 
-浏览新站测试得到问题的同学在 issue 发一下具体问题以及简单的复现步骤，别在 QQ 群说了，人多了问题不好记。
+Go + React BBS 服务，与现有 Flarum MySQL 数据库共享运行。
+
+## 1. 技术栈 (Tech Stack)
 
 ### 后端服务 (Backend)
 - **核心语言与框架**：Go 1.25+、Gin 
-- **数据持久化**：GORM ，生产环境运行于 MySQL 5.7
+- **数据持久化**：GORM，生产环境运行于 MySQL 5.7
 - **内容解析与安全**：
   - `goldmark`：CommonMark 标准 Markdown 解析器
   - `bluemonday`：HTML 白名单净化过滤（抵御 XSS 注入）
-  - `internal/flarum`：实现 Flarum s9e XML 逆向还原引擎（还原历史发帖原文且保持 SHA-256 强一致）提取数据
+  - `internal/flarum`：Flarum s9e XML 逆向还原引擎（还原历史发帖原文并校验 SHA-256 一致性）
 - **打包集成**：标准库 `embed.FS`，前端构建产物直接内嵌于单一 Go 二进制可执行文件。
 
 ### 前端系统 (Frontend)
@@ -43,7 +45,6 @@ jnsecBBS/
 ├── Dockerfile             # 多阶段构建文件 (Node/npm 构建前端 -> Go 编译静态二进制 -> Alpine 运行)
 └── docker-compose.yaml    # 生产容器编排文件
 ```
-a
 
 ### 核心处理链路
 ```mermaid
@@ -79,20 +80,20 @@ flowchart LR
     Push --> CI_Front[Job: 前端构建检验]
     
     CI_Go -->|gofmt / vet / race test| Gate{全部通过?}
-    CI_Front -->|bun run build| Gate
+    CI_Front -->|npm run build| Gate
     
     Gate -->|通过| Deploy[Job: SSH 部署]
     Gate -->|失败| Block([阻断流程并报警])
     
     Deploy -->|appleboy/ssh-action| SSH[连接目标 VPS]
     SSH --> RunScript[执行 run.sh]
-    RunScript --> Compose[Docker Compose 本地增量构建 & 容器热更]
+    RunScript --> Compose[Docker Compose 构建与更新容器]
 ```
 
 ### 部署关键细节
 1. **测试门禁**：
    - 后端执行 `gofmt` 格式断言、`go vet` 静态排查以及 `go test -race` 竞态安全测试。
-   - 前端通过 `bun --frozen-lockfile` 安装并执行 `tsc -b && vite build`，确保无类型及语法缺陷。
+   - 前端通过 `npm ci` 安装并执行 `npm run lint` 与 `npm run build`（`tsc -b && vite build`），确保无类型及语法缺陷。
 2. **安全连接**：
    - 依赖 GitHub Secrets：`VPS_HOST`、`VPS_USER`、`VPS_SSH_KEY`、`VPS_FINGERPRINT`。
 3. **CD 触发策略**：
@@ -101,7 +102,7 @@ flowchart LR
      - **以 `cicd` 开头的提交**：例如 `cicd: 重新部署`、`cicd: force rebuild`。
    - 其他常规提交（如 `docs:`, `fix:`, `refactor:` 等）仅执行 CI 检查，自动跳过 CD 部署。
 4. **VPS 落地触发**：
-   - 经 SSH 连接后进入 `/opt/backup/refactorBBS/jnsecBBS`，触发 `run.sh` 执行 `git pull --ff-only`、配置自动同步、镜像构建与 `docker-compose up -d --no-deps app` 容器平滑切换。
+   - 经 SSH 连接后进入 `/opt/backup/refactorBBS/jnsecBBS`，触发 `run.sh` 执行 `git pull --ff-only`、配置自动同步、镜像构建与 `docker-compose up -d --no-deps app` 容器重启更新。
    - 正式部署用户 `gha_deploy` 的 SSH 密钥仅允许执行现有 `run.sh`。生产变量由服务器 PAM 在 SSH 登录时加载，优先于脚本重新生成的 `.env`；项目目录不再使用 `docker-compose.override.yml`。
    - 正式 Nginx 配置独立保存，部署用户仅获得脚本现有 Nginx 操作所需的有限免密 sudo。配置位置、原因和验收方式见 [生产部署维护](docs/production-deployment.md)。
 
@@ -143,7 +144,7 @@ flowchart TD
 2. **数据与同步状态**：
    - Go 使用原 Flarum 表及显式迁移建立的 Go 辅助表；`bbs_v2` 的原生结构尚未接入在线 API。
    - `jnsec-bbs-sync.timer`、`jnsec-bbs-native-sync.timer` 均已禁用，对应服务已停止。共享模式无需同步，也不删除停用副本。
-3. **资源无缝共享**：
+3. **资源共享**：
    - 共享 Docker 卷 `wwwdata`：PHP 容器挂载写入，Go 容器只读挂载至 `/flarum:ro`，旧头像与附件直接由 Go 容器的 `/assets` 路由透出，免除额外磁盘同步开销。
 
 ---

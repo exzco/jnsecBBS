@@ -49,8 +49,8 @@ export default function RegisterPage() {
     try {
       const r = await api<{ id: string }>("/api/auth/captcha")
       setForm((f) => ({ ...f, captchaId: r.id, captchaValue: "" }))
-    } catch {
-      /* ignore */
+    } catch (e) {
+      toast.error("获取验证码失败: " + (e as Error).message)
     }
   }
 

@@ -21,3 +21,7 @@ old_backup_data/
 __pycache__/
 *.pyc
 image*
+
+# Agent scratchpad (temp scripts, logs, context handoffs)
+work/
+AGENTS.md
