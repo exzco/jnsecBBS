@@ -89,6 +89,69 @@ function ProfileForm({ me, realName, blogUrl, readOnly }: { me: User; realName: 
   )
 }
 
+// 邮箱绑定：展示当前绑定邮箱，换绑需当前密码确认；老用户注册邮箱即初始绑定，无需重复绑定。
+function EmailForm({ email, readOnly }: { email?: string; readOnly: boolean }) {
+  const qc = useQueryClient()
+  const [addr, setAddr] = useState(email ?? "")
+  const [pwd, setPwd] = useState("")
+
+  const changeEmail = useMutation({
+    mutationFn: (body: Record<string, unknown>) => api("/api/me/email", { json: body }),
+    onSuccess: () => {
+      setPwd("")
+      void qc.invalidateQueries({ queryKey: ["me"] })
+      toast.success("邮箱已更新，回帖通知将发送到新邮箱")
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>邮箱绑定</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="email">绑定邮箱</Label>
+          <Input
+            id="email"
+            type="email"
+            value={addr}
+            onChange={(e) => setAddr(e.target.value)}
+            maxLength={255}
+            disabled={readOnly}
+            placeholder="回帖通知将发送到此邮箱"
+          />
+          {email && <p className="text-xs text-muted-foreground">当前绑定：{email}</p>}
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="emailPwd">当前密码</Label>
+          <Input
+            id="emailPwd"
+            type="password"
+            value={pwd}
+            onChange={(e) => setPwd(e.target.value)}
+            autoComplete="current-password"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          {readOnly ? (
+            <p className="text-xs text-muted-foreground">迁移期间新站只读，暂不能修改。</p>
+          ) : (
+            <span />
+          )}
+          <Button
+            onClick={() => changeEmail.mutate({ email: addr, password: pwd })}
+            disabled={changeEmail.isPending || readOnly || !addr || !pwd || addr === email}
+          >
+            更新绑定
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function SettingsPage() {
   const { data: session } = useSession()
   const qc = useQueryClient()
@@ -212,6 +275,8 @@ export default function SettingsPage() {
         }}
         onConfirm={handleCropConfirm}
       />
+
+      <EmailForm email={session?.email} readOnly={readOnly} />
 
       <Card>
         <CardHeader>

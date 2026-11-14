@@ -92,6 +92,7 @@ export interface SessionInfo {
   registration: "open" | "invite"
   welcomeText?: string
   unread?: number
+  email?: string
   realName?: string
   blogUrl?: string
 }
