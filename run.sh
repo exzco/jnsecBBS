@@ -148,25 +148,25 @@ print_step "开始构建应用镜像 (docker-compose build app)..."
 docker-compose build app
 print_success "应用镜像构建完成"
 
-print_step "启动应用容器 (docker-compose up -d --no-deps app)..."
-docker-compose up -d --no-deps app
-print_success "容器启动完成"
-
-# 5.1 应用数据库迁移（幂等：已迁移到最新版本时为空操作）。
-# DDL 需要 root 权限（bbs_go_shared 是最小权限运行账号），迁移时临时注入 root DSN。
+# 5.1 数据库迁移先于应用启动：应用对未迁移库 Fail-Fast 拒绝启动，绝不能先起容器再补迁移。
+# DDL 需要 root 权限（bbs_go_shared 是最小权限运行账号），迁移容器临时注入 root DSN。
 if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
     MYSQL_ROOT_PASSWORD=$(grep '^MYSQL_ROOT_PASSWORD=' .env | head -1 | cut -d= -f2-)
 fi
 if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-    print_step "应用数据库迁移 (bbs migrate-db, root DDL 权限)..."
-    docker-compose exec -T \
+    print_step "应用数据库迁移 (一次性容器, root DDL 权限)..."
+    docker-compose run --rm \
         -e "JNSEC_DB_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/flarum?charset=utf8mb4&parseTime=True&loc=Local" \
-        app /app/bbs migrate-db
+        app migrate-db
 else
-    print_warning "缺少 MYSQL_ROOT_PASSWORD，使用应用账号执行迁移（新 DDL 迁移将失败）"
-    docker-compose exec -T app /app/bbs migrate-db
+    print_warning "缺少 MYSQL_ROOT_PASSWORD，使用应用账号执行迁移（新 DDL 迁移将失败）..."
+    docker-compose run --rm app migrate-db
 fi
 print_success "数据库迁移完成"
+
+print_step "启动应用容器 (docker-compose up -d --no-deps app)..."
+docker-compose up -d --no-deps app
+print_success "容器启动完成"
 
 print_step "检查容器运行状态 (bbs-app)..."
 docker ps -a --filter name=bbs-app
