@@ -220,17 +220,13 @@ func (s *Service) UpdateProfile(u *models.User, in ProfileInput) (*UserDTO, stri
 	return s.UserDTO(u), extra.RealName, extra.BlogURL, nil
 }
 
-// EmailInput 换绑邮箱请求（需当前密码确认）。
+// EmailInput 换绑邮箱请求。
 type EmailInput struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email string `json:"email"`
 }
 
-// UpdateEmail 校验密码并更换绑定邮箱（注册邮箱即初始绑定邮箱）。
+// UpdateEmail 更换绑定邮箱（登录会话内操作，CSRF 由 api 层防护）。
 func (s *Service) UpdateEmail(u *models.User, in EmailInput) *Error {
-	if !auth.CheckPassword(u.Password, in.Password) {
-		return Err(http.StatusBadRequest, "密码不正确。")
-	}
 	email := strings.TrimSpace(strings.ToLower(in.Email))
 	if _, err := mail.ParseAddress(email); err != nil {
 		return Err(http.StatusBadRequest, "邮箱格式不正确。")

@@ -89,16 +89,14 @@ function ProfileForm({ me, realName, blogUrl, readOnly }: { me: User; realName: 
   )
 }
 
-// 邮箱绑定：展示当前绑定邮箱，换绑需当前密码确认；老用户注册邮箱即初始绑定，无需重复绑定。
+// 邮箱绑定：展示当前绑定邮箱，直接填写新邮箱即可换绑；老用户注册邮箱即初始绑定，无需重复绑定。
 function EmailForm({ email, readOnly }: { email?: string; readOnly: boolean }) {
   const qc = useQueryClient()
   const [addr, setAddr] = useState(email ?? "")
-  const [pwd, setPwd] = useState("")
 
   const changeEmail = useMutation({
     mutationFn: (body: Record<string, unknown>) => api("/api/me/email", { json: body }),
     onSuccess: () => {
-      setPwd("")
       void qc.invalidateQueries({ queryKey: ["me"] })
       toast.success("邮箱已更新，回帖通知将发送到新邮箱")
     },
@@ -124,16 +122,6 @@ function EmailForm({ email, readOnly }: { email?: string; readOnly: boolean }) {
           />
           {email && <p className="text-xs text-muted-foreground">当前绑定：{email}</p>}
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="emailPwd">当前密码</Label>
-          <Input
-            id="emailPwd"
-            type="password"
-            value={pwd}
-            onChange={(e) => setPwd(e.target.value)}
-            autoComplete="current-password"
-          />
-        </div>
         <div className="flex items-center justify-between gap-3">
           {readOnly ? (
             <p className="text-xs text-muted-foreground">迁移期间新站只读，暂不能修改。</p>
@@ -141,8 +129,8 @@ function EmailForm({ email, readOnly }: { email?: string; readOnly: boolean }) {
             <span />
           )}
           <Button
-            onClick={() => changeEmail.mutate({ email: addr, password: pwd })}
-            disabled={changeEmail.isPending || readOnly || !addr || !pwd || addr === email}
+            onClick={() => changeEmail.mutate({ email: addr })}
+            disabled={changeEmail.isPending || readOnly || !addr || addr === email}
           >
             更新绑定
           </Button>
