@@ -225,7 +225,7 @@ type EmailInput struct {
 	Email string `json:"email"`
 }
 
-// UpdateEmail 更换绑定邮箱（登录会话内操作，CSRF 由 api 层防护）。
+// UpdateEmail 更换绑定邮箱并标记为已绑定（绑定后才能接收回帖邮件通知）。
 func (s *Service) UpdateEmail(u *models.User, in EmailInput) *Error {
 	email := strings.TrimSpace(strings.ToLower(in.Email))
 	if _, err := mail.ParseAddress(email); err != nil {
@@ -236,12 +236,28 @@ func (s *Service) UpdateEmail(u *models.User, in EmailInput) *Error {
 	if cnt > 0 {
 		return Err(http.StatusBadRequest, "邮箱已被其他账号绑定。")
 	}
-	if err := s.db.Model(u).Update("email", email).Error; err != nil {
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(u).Update("email", email).Error; err != nil {
+			return err
+		}
+		return tx.Where(&EmailBind{UserID: u.ID}).
+			Assign(&EmailBind{UserID: u.ID, BoundAt: time.Now()}).
+			FirstOrCreate(&EmailBind{}).Error
+	})
+	if err != nil {
 		return Err(http.StatusInternalServerError, "保存失败，请重试。")
 	}
 	// email 已变更，显式失效 user:id（Cache-Aside 写路径）。
 	cache.Default.Delete(cache.UserIDKey(u.ID))
 	u.Email = email
+	return nil
+}
+
+// UnbindEmail 解除邮箱绑定（停止接收回帖邮件通知；注册邮箱保留）。
+func (s *Service) UnbindEmail(u *models.User) *Error {
+	if err := s.db.Delete(&EmailBind{}, "user_id = ?", u.ID).Error; err != nil {
+		return Err(http.StatusInternalServerError, "操作失败，请重试。")
+	}
 	return nil
 }
 

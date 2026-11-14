@@ -24,6 +24,7 @@ func (s *Server) me(c echo.Context) (any, *service.Error) {
 	}
 	if u != nil {
 		resp["email"] = u.Email
+		resp["emailBound"] = s.svc.EmailBound(u.ID)
 		resp["unread"] = s.svc.UnreadCount(u.ID)
 		resp["realName"], resp["blogUrl"] = s.svc.LoadUserProfileExtra(u.ID)
 	}

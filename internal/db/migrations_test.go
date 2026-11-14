@@ -69,7 +69,7 @@ func TestExplicitMigrationsPreserveLegacySchemaAndData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 3 {
+	if len(history) != 4 {
 		t.Fatalf("migration history=%+v", history)
 	}
 	for _, row := range history {

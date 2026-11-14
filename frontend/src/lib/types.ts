@@ -93,6 +93,7 @@ export interface SessionInfo {
   welcomeText?: string
   unread?: number
   email?: string
+  emailBound?: boolean
   realName?: string
   blogUrl?: string
 }

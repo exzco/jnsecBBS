@@ -89,8 +89,8 @@ function ProfileForm({ me, realName, blogUrl, readOnly }: { me: User; realName: 
   )
 }
 
-// 邮箱绑定：展示当前绑定邮箱，直接填写新邮箱即可换绑；老用户注册邮箱即初始绑定，无需重复绑定。
-function EmailForm({ email, readOnly }: { email?: string; readOnly: boolean }) {
+// 邮箱绑定：绑定后才能接收回帖邮件通知；老用户已由迁移自动绑定，无需操作。
+function EmailForm({ email, bound, readOnly }: { email?: string; bound: boolean; readOnly: boolean }) {
   const qc = useQueryClient()
   const [addr, setAddr] = useState(email ?? "")
 
@@ -98,7 +98,16 @@ function EmailForm({ email, readOnly }: { email?: string; readOnly: boolean }) {
     mutationFn: (body: Record<string, unknown>) => api("/api/me/email", { json: body }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["me"] })
-      toast.success("邮箱已更新，回帖通知将发送到新邮箱")
+      toast.success(bound ? "邮箱已更新，回帖通知将发送到新邮箱" : "绑定成功，回帖通知将发送到该邮箱")
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
+  const unbind = useMutation({
+    mutationFn: () => api("/api/me/email/unbind", { json: {} }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["me"] })
+      toast.success("已解除绑定，将不再接收回帖邮件通知")
     },
     onError: (e) => toast.error((e as Error).message),
   })
@@ -109,6 +118,11 @@ function EmailForm({ email, readOnly }: { email?: string; readOnly: boolean }) {
         <CardTitle>邮箱绑定</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {!bound && (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            尚未绑定邮箱：绑定后，有人回复你的讨论时才会收到邮件通知。
+          </p>
+        )}
         <div className="space-y-2">
           <Label htmlFor="email">绑定邮箱</Label>
           <Input
@@ -118,21 +132,29 @@ function EmailForm({ email, readOnly }: { email?: string; readOnly: boolean }) {
             onChange={(e) => setAddr(e.target.value)}
             maxLength={255}
             disabled={readOnly}
-            placeholder="回帖通知将发送到此邮箱"
+            placeholder="输入你要接收通知的邮箱"
           />
-          {email && <p className="text-xs text-muted-foreground">当前绑定：{email}</p>}
+          {bound && email && <p className="text-xs text-muted-foreground">当前绑定：{email}</p>}
         </div>
         <div className="flex items-center justify-between gap-3">
-          {readOnly ? (
-            <p className="text-xs text-muted-foreground">迁移期间新站只读，暂不能修改。</p>
+          {bound ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-red-600"
+              disabled={unbind.isPending || readOnly}
+              onClick={() => unbind.mutate()}
+            >
+              解除绑定
+            </Button>
           ) : (
             <span />
           )}
           <Button
             onClick={() => changeEmail.mutate({ email: addr })}
-            disabled={changeEmail.isPending || readOnly || !addr || addr === email}
+            disabled={changeEmail.isPending || readOnly || !addr || (bound && addr === email)}
           >
-            更新绑定
+            {bound ? "更新绑定" : "绑定邮箱"}
           </Button>
         </div>
       </CardContent>
@@ -264,7 +286,7 @@ export default function SettingsPage() {
         onConfirm={handleCropConfirm}
       />
 
-      <EmailForm email={session?.email} readOnly={readOnly} />
+      <EmailForm email={session?.email} bound={!!session?.emailBound} readOnly={readOnly} />
 
       <Card>
         <CardHeader>

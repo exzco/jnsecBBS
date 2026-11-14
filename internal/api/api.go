@@ -53,6 +53,12 @@ func (s *Server) Register(e *echo.Echo) {
 	pub.POST("/me/password", s.ha(s.updatePassword))
 	pub.POST("/me/avatar", s.ha(s.updateAvatar))
 	pub.POST("/me/email", s.ha(s.updateEmail))
+	pub.POST("/me/email/unbind", s.ha(func(c echo.Context) (any, *service.Error) {
+		if err := s.svc.UnbindEmail(s.currentUser(c)); err != nil {
+			return nil, err
+		}
+		return echo.Map{"ok": true}, nil
+	}))
 	pub.GET("/me/notifications", s.ha(func(c echo.Context) (any, *service.Error) {
 		items, unread := s.svc.Notifications(s.currentUser(c))
 		return echo.Map{"items": items, "unread": unread}, nil

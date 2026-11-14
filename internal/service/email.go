@@ -31,6 +31,22 @@ type EmailOutbox struct {
 
 func (EmailOutbox) TableName() string { return "bbs_email_outbox" }
 
+// EmailBind 用户邮箱绑定记录（bbs_email_bind）：行存在 = 已绑定，回帖邮件通知仅发给已绑定用户。
+// 存量用户由迁移回填；新注册用户须在设置页显式绑定。
+type EmailBind struct {
+	UserID  uint      `gorm:"column:user_id;primaryKey"`
+	BoundAt time.Time `gorm:"column:bound_at"`
+}
+
+func (EmailBind) TableName() string { return "bbs_email_bind" }
+
+// EmailBound 用户是否已绑定邮箱。
+func (s *Service) EmailBound(userID uint) bool {
+	var n int64
+	s.db.Model(&EmailBind{}).Where("user_id = ?", userID).Count(&n)
+	return n > 0
+}
+
 // newMailSender 按配置构建 SMTP 客户端；host 或 from 留空即视为未启用邮件功能。
 func newMailSender(cfg *config.Config) *mail.Sender {
 	if cfg.Smtp.Host == "" || cfg.Smtp.From == "" {
@@ -56,9 +72,10 @@ func (s *Service) enqueueEmail(tx *gorm.DB, to, subject, body string) error {
 }
 
 // enqueueReplyEmail 给讨论楼主排一封回复通知邮件（含回复内容，超长截断）。
+// 未绑定邮箱的用户不发送。
 func (s *Service) enqueueReplyEmail(tx *gorm.DB, replier *models.User, d *models.Discussion, number int, content string) error {
 	to := d.User.Email
-	if to == "" {
+	if to == "" || !s.EmailBound(d.User.ID) {
 		return nil
 	}
 	subject := fmt.Sprintf("[站内通知] %s 回复了你的讨论《%s》", replier.Username, d.Title)

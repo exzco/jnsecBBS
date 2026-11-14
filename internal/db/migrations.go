@@ -25,6 +25,7 @@ var migrations = []migration{
 	{1, "go_notifications_and_invites", createNotificationsAndInvites},
 	{2, "go_user_profiles", createUserProfiles},
 	{3, "go_email_outbox", createEmailOutbox},
+	{4, "go_email_bind", createEmailBind},
 }
 
 // Migrate explicitly upgrades Go-owned tables in an existing Flarum mirror.
@@ -174,6 +175,31 @@ func createEmailOutbox(g *gorm.DB) error {
 	}
 	if g.Dialector.Name() != "mysql" {
 		statements = append(statements, `CREATE INDEX IF NOT EXISTS idx_bbs_email_outbox ON bbs_email_outbox (sent_at, id)`)
+	}
+	for _, statement := range statements {
+		if err := g.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// createEmailBind 建邮箱绑定表，并把存量用户（注册邮箱非空）回填为已绑定——
+// 绑定通知规则仅对上线后的新注册用户生效，老用户保持原有接收行为。
+func createEmailBind(g *gorm.DB) error {
+	idType, suffix := "integer", ""
+	if g.Dialector.Name() == "mysql" {
+		idType = "int unsigned"
+		suffix = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+	}
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS bbs_email_bind (
+			user_id ` + idType + ` NOT NULL PRIMARY KEY,
+			bound_at datetime NOT NULL
+		)` + suffix,
+		`INSERT INTO bbs_email_bind (user_id, bound_at)
+			SELECT id, CURRENT_TIMESTAMP FROM flarum_users
+			WHERE email <> '' AND id NOT IN (SELECT user_id FROM bbs_email_bind)`,
 	}
 	for _, statement := range statements {
 		if err := g.Exec(statement).Error; err != nil {
