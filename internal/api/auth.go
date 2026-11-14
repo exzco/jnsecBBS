@@ -1,426 +1,140 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
-	"image/png"
-	"io"
 	"log"
 	"net/http"
-	"net/mail"
-	"net/url"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
 
-	"github.com/dchest/captcha"
-	"github.com/disintegration/imaging"
 	"github.com/exzco/bbs/internal/auth"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/gin-gonic/gin"
+	"github.com/exzco/bbs/internal/service"
 	"github.com/gorilla/csrf"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
+	"github.com/labstack/echo/v4"
 )
 
 // me 当前会话信息：用户 + CSRF token + 站点设置。
-func (s *Server) me(c *gin.Context) {
+func (s *Server) me(c echo.Context) (any, *service.Error) {
 	u := s.currentUser(c)
-	resp := gin.H{
-		"user":         userDTO(u),
+	resp := echo.Map{
+		"user":         s.svc.UserDTO(u),
 		"readOnly":     s.cfg.ReadOnly,
-		"csrfToken":    csrf.Token(c.Request),
-		"siteName":     s.settingValue(models.SettingKeySiteName),
-		"registration": s.settingValue(models.SettingKeyRegistration),
-		"welcomeText":  s.settingValue(models.SettingKeyWelcomeText),
+		"csrfToken":    csrf.Token(c.Request()),
+		"siteName":     s.svc.SettingValue(models.SettingKeySiteName),
+		"registration": s.svc.SettingValue(models.SettingKeyRegistration),
+		"welcomeText":  s.svc.SettingValue(models.SettingKeyWelcomeText),
 	}
 	if u != nil {
-		var unread int64
-		s.db.Model(&models.Notification{}).Where("user_id = ? AND read_at IS NULL", u.ID).Count(&unread)
-		resp["unread"] = unread
-		realName, blogURL := s.loadUserProfileExtra(u.ID)
-		resp["realName"] = realName
-		resp["blogUrl"] = blogURL
+		resp["email"] = u.Email
+		resp["unread"] = s.svc.UnreadCount(u.ID)
+		resp["realName"], resp["blogUrl"] = s.svc.LoadUserProfileExtra(u.ID)
 	}
-	c.JSON(http.StatusOK, resp)
+	return resp, nil
 }
 
-func (s *Server) captchaNew(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"id": captcha.New()})
+// updateEmail 换绑邮箱（需当前密码确认）。
+func (s *Server) updateEmail(c echo.Context) (any, *service.Error) {
+	body, err := bindJSON[service.EmailInput](c)
+	if err != nil {
+		return nil, err
+	}
+	if serr := s.svc.UpdateEmail(s.currentUser(c), *body); serr != nil {
+		return nil, serr
+	}
+	return echo.Map{"ok": true}, nil
 }
 
-func (s *Server) login(c *gin.Context) {
-	var body struct {
+func (s *Server) login(c echo.Context) (any, *service.Error) {
+	body, err := bindJSON[struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+	}](c)
+	if err != nil || body.Username == "" || body.Password == "" {
+		return nil, service.Err(http.StatusBadRequest, "请输入用户名和密码。")
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Username == "" || body.Password == "" {
-		fail(c, http.StatusBadRequest, "请输入用户名和密码。")
-		return
+	u, serr := s.svc.Login(body.Username, body.Password)
+	if serr != nil {
+		return nil, serr
 	}
-	var u models.User
-	// Flarum 语义：登录标识可以是用户名或邮箱
-	if err := s.db.Preload("Groups").
-		Where("lower(username) = lower(?) OR lower(email) = lower(?)", body.Username, body.Username).
-		First(&u).Error; err != nil ||
-		!auth.CheckPassword(u.Password, body.Password) {
-		fail(c, http.StatusBadRequest, "用户名或密码错误。")
-		return
-	}
-	if u.IsBanned() {
-		fail(c, http.StatusForbidden, "该账号已被封禁，如有疑问请联系管理员。")
-		return
-	}
-	s.startSession(c, &u)
+	return s.startSession(c, u)
 }
 
-func (s *Server) startSession(c *gin.Context, u *models.User) {
-	token, err := auth.CreateSession(s.db, u.ID, c.Request.UserAgent(), s.cfg.CookieSecure)
+// startSession 创建会话 token、写 Cookie 并返回会话信息。
+func (s *Server) startSession(c echo.Context, u *models.User) (any, *service.Error) {
+	token, err := auth.CreateSession(s.db, u.ID, c.Request().UserAgent(), s.cfg.CookieSecure)
 	if err != nil {
 		log.Printf("[api] CreateSession 失败 user=%s: %v", u.Username, err)
-		fail(c, http.StatusInternalServerError, "登录失败，请重试。")
-		return
+		return nil, service.Err(http.StatusInternalServerError, "登录失败，请重试。")
 	}
-	auth.SetSessionCookie(c.Writer, token, s.cfg.CookieSecure)
-	now := time.Now()
-	if !s.cfg.ReadOnly {
-		s.db.Model(u).Update("last_seen_at", &now)
+	auth.SetSessionCookie(c.Response(), token, s.cfg.CookieSecure)
+	if err := s.svc.TouchSeen(u); err != nil {
+		return nil, service.Err(http.StatusInternalServerError, "登录失败，请重试。")
 	}
-	var unread int64
-	s.db.Model(&models.Notification{}).Where("user_id = ? AND read_at IS NULL", u.ID).Count(&unread)
-	c.JSON(http.StatusOK, gin.H{"user": userDTO(u), "unread": unread, "csrfToken": csrf.Token(c.Request)})
+	return echo.Map{"user": s.svc.UserDTO(u), "unread": s.svc.UnreadCount(u.ID), "csrfToken": csrf.Token(c.Request())}, nil
 }
 
-func (s *Server) register(c *gin.Context) {
-	var body struct {
-		Username        string `json:"username"`
-		Email           string `json:"email"`
-		Password        string `json:"password"`
-		PasswordConfirm string `json:"passwordConfirm"`
-		Invite          string `json:"invite"`
-		CaptchaID       string `json:"captchaId"`
-		CaptchaValue    string `json:"captchaValue"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		fail(c, http.StatusBadRequest, "请求格式错误。")
-		return
-	}
-	username := strings.TrimSpace(body.Username)
-	email := strings.TrimSpace(strings.ToLower(body.Email))
-
-	if s.settingValue(models.SettingKeyRegistration) == "invite" {
-		var inv models.InviteCode
-		if err := s.db.Where("code = ?", strings.TrimSpace(body.Invite)).First(&inv).Error; err != nil {
-			fail(c, http.StatusBadRequest, "邀请码无效。")
-			return
-		}
-		if inv.UsedBy != nil || (inv.ExpiresAt != nil && inv.ExpiresAt.Before(time.Now())) {
-			fail(c, http.StatusBadRequest, "邀请码已被使用或已过期。")
-			return
-		}
-	} else if !captcha.VerifyString(body.CaptchaID, body.CaptchaValue) {
-		fail(c, http.StatusBadRequest, "验证码错误。")
-		return
-	}
-	if !usernameRe.MatchString(username) {
-		fail(c, http.StatusBadRequest, "用户名需为 2-20 位字母、数字、下划线或连字符。")
-		return
-	}
-	if _, err := mail.ParseAddress(email); err != nil {
-		fail(c, http.StatusBadRequest, "邮箱格式不正确。")
-		return
-	}
-	if len(body.Password) < 8 {
-		fail(c, http.StatusBadRequest, "密码至少 8 位。")
-		return
-	}
-	if body.Password != body.PasswordConfirm {
-		fail(c, http.StatusBadRequest, "两次输入的密码不一致。")
-		return
-	}
-	var cnt int64
-	s.db.Model(&models.User{}).Where("lower(username) = lower(?)", username).Count(&cnt)
-	if cnt > 0 {
-		fail(c, http.StatusBadRequest, "用户名已被占用。")
-		return
-	}
-	s.db.Model(&models.User{}).Where("lower(email) = lower(?)", email).Count(&cnt)
-	if cnt > 0 {
-		fail(c, http.StatusBadRequest, "邮箱已被注册。")
-		return
-	}
-	hash, err := auth.HashPassword(body.Password)
+func (s *Server) register(c echo.Context) (any, *service.Error) {
+	body, err := bindJSON[service.RegisterInput](c)
 	if err != nil {
-		fail(c, http.StatusInternalServerError, "注册失败，请重试。")
-		return
+		return nil, err
 	}
-	u := models.User{
-		Username: username, Email: email, Password: hash,
-		IsEmailConfirmed: true, Preferences: []byte("a:0:{}"),
+	u, serr := s.svc.Register(*body)
+	if serr != nil {
+		return nil, serr
 	}
-	err = s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&u).Error; err != nil {
-			return err
-		}
-		member := models.Group{ID: models.GroupMember}
-		return tx.Model(&u).Association("Groups").Append(&member)
-	})
-	if err != nil {
-		log.Printf("[api] register 事务失败 username=%s: %v", username, err)
-		fail(c, http.StatusInternalServerError, "注册失败，请重试。")
-		return
-	}
-	if s.settingValue(models.SettingKeyRegistration) == "invite" {
-		s.db.Model(&models.InviteCode{}).Where("code = ?", strings.TrimSpace(body.Invite)).
-			Updates(map[string]any{"used_by": u.ID, "used_at": time.Now()})
-	}
-	s.startSession(c, &u)
+	return s.startSession(c, u)
 }
 
-func (s *Server) logout(c *gin.Context) {
-	if v, ok := c.Get("token"); ok {
-		if t, ok := v.(string); ok {
-			auth.DestroySession(s.db, t)
-		}
-	}
-	auth.ClearSessionCookie(c.Writer, s.cfg.CookieSecure)
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+func (s *Server) logout(c echo.Context) (any, *service.Error) {
+	auth.DestroySession(s.db, token(c))
+	auth.ClearSessionCookie(c.Response(), s.cfg.CookieSecure)
+	return echo.Map{"ok": true}, nil
 }
 
 // ---------- 个人设置 ----------
 
-func (s *Server) updateProfile(c *gin.Context) {
-	u := s.currentUser(c)
-	var body struct {
-		Bio      string  `json:"bio"`
-		RealName *string `json:"realName"`
-		BlogURL  *string `json:"blogUrl"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		fail(c, http.StatusBadRequest, "请求格式错误。")
-		return
-	}
-	bio := strings.TrimSpace(body.Bio)
-	if len([]rune(bio)) > 500 {
-		bio = string([]rune(bio)[:500])
-	}
-	var realName, blogURL string
-	if body.RealName != nil {
-		realName = strings.TrimSpace(*body.RealName)
-		if len([]rune(realName)) > 30 {
-			fail(c, http.StatusBadRequest, "实名最长 30 个字。")
-			return
-		}
-	}
-	if body.BlogURL != nil {
-		blogURL = strings.TrimSpace(*body.BlogURL)
-		if blogURL != "" {
-			parsed, err := url.Parse(blogURL)
-			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || len(blogURL) > 255 {
-				fail(c, http.StatusBadRequest, "博客链接需为 http(s) 地址。")
-				return
-			}
-		}
-	}
-
-	var extra models.UserProfile
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// Do not mutate the session user until the whole transaction commits.
-		if err := tx.Model(&models.User{}).Where("id = ?", u.ID).Update("bio", bio).Error; err != nil {
-			return err
-		}
-		if body.RealName != nil || body.BlogURL != nil {
-			columns := []string{"updated_at"}
-			if body.RealName != nil {
-				columns = append(columns, "real_name")
-			}
-			if body.BlogURL != nil {
-				columns = append(columns, "blog_url")
-			}
-			// Update only supplied fields, preserving concurrent changes to others.
-			profile := models.UserProfile{UserID: u.ID, RealName: realName, BlogURL: blogURL, UpdatedAt: time.Now()}
-			if err := tx.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "user_id"}},
-				DoUpdates: clause.AssignmentColumns(columns),
-			}).Create(&profile).Error; err != nil {
-				return err
-			}
-		}
-		if err := tx.Where("user_id = ?", u.ID).First(&extra).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		return nil
-	})
+func (s *Server) updateProfile(c echo.Context) (any, *service.Error) {
+	body, err := bindJSON[service.ProfileInput](c)
 	if err != nil {
-		log.Printf("[api] updateProfile 保存失败 user=%s: %v", u.Username, err)
-		fail(c, http.StatusInternalServerError, "保存失败，请重试。")
-		return
+		return nil, err
 	}
-	u.Bio = bio
-	c.JSON(http.StatusOK, gin.H{"user": userDTO(u), "realName": extra.RealName, "blogUrl": extra.BlogURL})
+	user, realName, blogURL, serr := s.svc.UpdateProfile(s.currentUser(c), *body)
+	if serr != nil {
+		return nil, serr
+	}
+	return echo.Map{"user": user, "realName": realName, "blogUrl": blogURL}, nil
 }
 
-func (s *Server) updatePassword(c *gin.Context) {
-	u := s.currentUser(c)
-	var body struct {
-		Current string `json:"current"`
-		New     string `json:"new"`
-		Confirm string `json:"confirm"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		fail(c, http.StatusBadRequest, "请求格式错误。")
-		return
-	}
-	if !auth.CheckPassword(u.Password, body.Current) {
-		fail(c, http.StatusBadRequest, "当前密码不正确。")
-		return
-	}
-	if len(body.New) < 8 {
-		fail(c, http.StatusBadRequest, "新密码至少 8 位。")
-		return
-	}
-	if body.New != body.Confirm {
-		fail(c, http.StatusBadRequest, "两次输入的新密码不一致。")
-		return
-	}
-	hash, err := auth.HashPassword(body.New)
+func (s *Server) updatePassword(c echo.Context) (any, *service.Error) {
+	body, err := bindJSON[service.PasswordInput](c)
 	if err != nil {
-		fail(c, http.StatusInternalServerError, "修改失败，请重试。")
-		return
+		return nil, err
 	}
-	s.db.Model(u).Update("password", hash)
-	// 改密后踢掉其他设备的会话
-	current := ""
-	if v, ok := c.Get("token"); ok {
-		if t, ok := v.(string); ok {
-			current = t
-		}
+	if serr := s.svc.UpdatePassword(s.currentUser(c), *body, token(c)); serr != nil {
+		return nil, serr
 	}
-	s.db.Where("user_id = ? AND token <> ?", u.ID, current).Delete(&models.AccessToken{})
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	return echo.Map{"ok": true}, nil
 }
 
-func (s *Server) updateAvatar(c *gin.Context) {
+func (s *Server) updateAvatar(c echo.Context) (any, *service.Error) {
 	u := s.currentUser(c)
-	if c.PostForm("action") == "remove" {
-		old := u.AvatarURL
-		if err := s.db.Model(u).Update("avatar_url", "").Error; err != nil {
-			fail(c, http.StatusInternalServerError, "删除头像失败。")
-			return
-		}
-		s.removeAvatarFile(old)
-		c.JSON(http.StatusOK, gin.H{"avatar": avatarURL(u)})
-		return
+	if c.FormValue("action") == "remove" {
+		avatar, serr := s.svc.RemoveAvatar(u)
+		return echo.Map{"avatar": avatar}, serr
 	}
 	fh, err := c.FormFile("file")
 	if err != nil {
-		fail(c, http.StatusBadRequest, "请选择头像文件。")
-		return
+		return nil, service.Err(http.StatusBadRequest, "请选择头像文件。")
 	}
 	if fh.Size > 2<<20 {
-		fail(c, http.StatusBadRequest, "头像文件不能超过 2MB。")
-		return
+		return nil, service.Err(http.StatusBadRequest, "头像文件不能超过 2MB。")
 	}
 	f, err := fh.Open()
 	if err != nil {
-		fail(c, http.StatusBadRequest, "读取文件失败。")
-		return
+		return nil, service.Err(http.StatusBadRequest, "读取文件失败。")
 	}
 	defer f.Close()
-	head := make([]byte, 512)
-	n, _ := f.Read(head)
-	ct := http.DetectContentType(head[:n])
-	if ct != "image/png" && ct != "image/jpeg" {
-		fail(c, http.StatusBadRequest, "仅支持 PNG / JPG 图片。")
-		return
+	avatar, serr := s.svc.SaveAvatar(u, f)
+	if serr != nil {
+		return nil, serr
 	}
-	if sk, ok := f.(io.Seeker); ok {
-		if _, err := sk.Seek(0, io.SeekStart); err != nil {
-			fail(c, http.StatusBadRequest, "读取文件失败。")
-			return
-		}
-	}
-	img, err := imaging.Decode(f)
-	if err != nil {
-		fail(c, http.StatusBadRequest, "图片解析失败。")
-		return
-	}
-	thumb := imaging.Thumbnail(img, 128, 128, imaging.Lanczos)
-	name, _ := randHex(16)
-	dest := filepath.Join(s.cfg.DataDir, "avatars", name+".png")
-	if err := imaging.Save(thumb, dest, imaging.PNGCompressionLevel(png.DefaultCompression)); err != nil {
-		fail(c, http.StatusInternalServerError, "保存头像失败。")
-		return
-	}
-	old := u.AvatarURL
-	// 写入 flarum 的 avatar_url：指向新站自己的头像路由（data/avatars 由 app 伺服）
-	url := "/avatars/" + name + ".png"
-	if err := s.db.Model(u).Update("avatar_url", url).Error; err != nil {
-		_ = os.Remove(dest)
-		fail(c, http.StatusInternalServerError, "保存头像失败。")
-		return
-	}
-	s.removeAvatarFile(old)
-	c.JSON(http.StatusOK, gin.H{"avatar": url})
-}
-
-// removeAvatarFile 删除 data/avatars 下的头像文件（flarum /assets 路径不归 Go 管，跳过）。
-func (s *Server) removeAvatarFile(url string) {
-	if url == "" || !strings.HasPrefix(url, "/avatars/") {
-		return
-	}
-	_ = os.Remove(filepath.Join(s.cfg.DataDir, "avatars", filepath.Base(url)))
-}
-
-func randHex(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
-}
-
-// ---------- 通知 ----------
-
-type NotificationDTO struct {
-	ID         uint                  `json:"id"`
-	Type       string                `json:"type"`
-	Sender     *UserDTO              `json:"sender"`
-	Discussion *DiscussionSummaryDTO `json:"discussion,omitempty"`
-	PostID     uint                  `json:"postId"`
-	Read       bool                  `json:"read"`
-	CreatedAt  time.Time             `json:"createdAt"`
-}
-
-func (s *Server) notifications(c *gin.Context) {
-	u := s.currentUser(c)
-	var notifs []models.Notification
-	s.db.Where("user_id = ? AND discussion_id IN (?)", u.ID, s.visibleDiscussions(u).Select("flarum_discussions.id").Where("hidden_at IS NULL AND is_approved = ?", true)).
-		Preload("Sender").Preload("Discussion").
-		Order("created_at DESC").Limit(50).Find(&notifs)
-	items := make([]NotificationDTO, 0, len(notifs))
-	for _, n := range notifs {
-		item := NotificationDTO{
-			ID: n.ID, Type: n.Type, Sender: userDTO(&n.Sender),
-			PostID: n.PostID, Read: n.ReadAt != nil, CreatedAt: n.CreatedAt,
-		}
-		if n.Discussion != nil {
-			d := s.discussionSummaryDTO(n.Discussion, u)
-			item.Discussion = &d
-		}
-		items = append(items, item)
-	}
-	var unread int64
-	s.db.Model(&models.Notification{}).Where("user_id = ? AND read_at IS NULL", u.ID).Count(&unread)
-	c.JSON(http.StatusOK, gin.H{"items": items, "unread": unread})
-}
-
-func (s *Server) notificationsRead(c *gin.Context) {
-	u := s.currentUser(c)
-	now := time.Now()
-	s.db.Model(&models.Notification{}).
-		Where("user_id = ? AND read_at IS NULL", u.ID).Update("read_at", now)
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	return echo.Map{"avatar": avatar}, nil
 }

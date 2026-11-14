@@ -3,7 +3,9 @@ package auth
 import (
 	"regexp"
 	"strconv"
+	"time"
 
+	"github.com/exzco/bbs/internal/cache"
 	"github.com/exzco/bbs/internal/models"
 	"gorm.io/gorm"
 )
@@ -23,8 +25,15 @@ type TagPerms struct {
 	Post   map[uint][]uint // tagID -> 允许发帖/回帖的组 ID 列表
 }
 
-// LoadTagPerms 一次性加载全部版块权限（每请求调用一次，数据量小）。
+// LoadTagPerms 一次性加载全部版块权限。Cache-Aside：先查 tag:perms:all，
+// 未命中查库并回写（TTL 带抖动）；版块/授权写路径显式失效该 Key。
+// 加载失败（Failed）不缓存，避免瞬时 DB 错误被固定。
 func LoadTagPerms(g *gorm.DB) TagPerms {
+	if v, ok := cache.Default.Get(cache.TagPermsKey()); ok {
+		if tp, ok := v.(TagPerms); ok {
+			return tp
+		}
+	}
 	tp := TagPerms{Tags: map[uint]models.Tag{}, Reply: map[uint][]uint{}, View: map[uint][]uint{}, Post: map[uint][]uint{}}
 	var tags []models.Tag
 	if err := g.Find(&tags).Error; err != nil {
@@ -54,10 +63,11 @@ func LoadTagPerms(g *gorm.DB) TagPerms {
 			tp.Post[uint(tagID)] = append(tp.Post[uint(tagID)], r.GroupID)
 		}
 	}
+	cache.Default.Set(cache.TagPermsKey(), tp, cache.TTL(time.Minute, 15*time.Second))
 	return tp
 }
 
-// FillTagPerm 把权限填充到单个版块。
+// fillOwnTagPerm 把权限填充到单个版块。
 func fillOwnTagPerm(tag *models.Tag, tp TagPerms) {
 	tag.ViewGroups = tp.View[tag.ID]
 	tag.PostGroups = tp.Post[tag.ID]

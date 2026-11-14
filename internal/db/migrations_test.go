@@ -69,7 +69,7 @@ func TestExplicitMigrationsPreserveLegacySchemaAndData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 2 {
+	if len(history) != 3 {
 		t.Fatalf("migration history=%+v", history)
 	}
 	for _, row := range history {
@@ -103,9 +103,9 @@ func TestMigrationFailureDoesNotAdvanceVersionAndCanRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
-		"DELETE FROM bbs_schema_migrations WHERE version = 2",
+		"DELETE FROM bbs_schema_migrations WHERE version >= 2",
 		"DROP TABLE bbs_user_profiles",
-		"CREATE TRIGGER reject_migration BEFORE INSERT ON bbs_schema_migrations WHEN NEW.version = 2 BEGIN SELECT RAISE(ABORT, 'version write failed'); END",
+		"CREATE TRIGGER reject_migration BEFORE INSERT ON bbs_schema_migrations WHEN NEW.version >= 2 BEGIN SELECT RAISE(ABORT, 'version write failed'); END",
 	} {
 		if err := g.Exec(statement).Error; err != nil {
 			t.Fatal(err)

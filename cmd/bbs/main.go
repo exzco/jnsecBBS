@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,8 +16,8 @@ import (
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/db"
 	"github.com/exzco/bbs/internal/models"
+	"github.com/exzco/bbs/internal/service"
 	"github.com/exzco/bbs/internal/web"
-	"github.com/gorilla/csrf"
 	"gorm.io/gorm"
 )
 
@@ -78,7 +77,9 @@ func usage() {
 func loadCfg(args []string) *config.Config {
 	fs := flag.NewFlagSet("bbs", flag.ContinueOnError)
 	cfgPath := fs.String("c", "config.yaml", "配置文件路径")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("参数解析失败: %v", err)
+	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Fatalf("加载配置失败: %v", err)
@@ -103,22 +104,6 @@ func openDB(cfg *config.Config) *gorm.DB {
 	return g
 }
 
-// csrfKey 保证 32 字节：过短时用 SHA-256 派生。
-func csrfKey(secret string) []byte {
-	if len(secret) >= 32 {
-		return []byte(secret)
-	}
-	sum := sha256.Sum256([]byte("jnsec-bbs-csrf:" + secret))
-	return sum[:]
-}
-
-// plaintextMark 在请求上下文中标记明文 HTTP，供 gorilla/csrf 放宽 Origin/Referer 校验。
-func plaintextMark(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, csrf.PlaintextHTTPRequest(r))
-	})
-}
-
 func serveCmd(args []string) {
 	cfg := loadCfg(args)
 	if cfg.SessionSecret == "" || cfg.SessionSecret == "CHANGE-ME-to-a-random-64-char-string" {
@@ -133,42 +118,28 @@ func serveCmd(args []string) {
 	if err != nil {
 		log.Fatalf("初始化 Web 服务失败: %v", err)
 	}
-	// 明文 HTTP 部署需在 CSRF 中间件之前（外层）标记，否则按 HTTPS 比对 Origin/Referer 导致全部 403
-	opts := []csrf.Option{
-		csrf.Secure(cfg.CookieSecure),
-		csrf.CookieName("jnsec_csrf"),
-		csrf.FieldName("_csrf"),
-		csrf.RequestHeader("X-CSRF-Token"),
-	}
-	if len(cfg.TrustedOrigins) > 0 {
-		opts = append(opts, csrf.TrustedOrigins(cfg.TrustedOrigins))
-	}
-	opts = append(opts, csrf.ErrorHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, fmt.Sprintf("CSRF 校验失败，请刷新页面重试。（原因: %v）", csrf.FailureReason(r)), http.StatusForbidden)
-	})))
-	handler := csrf.Protect(csrfKey(cfg.SessionSecret), opts...)(srv.Handler())
-	if !cfg.CookieSecure {
-		handler = plaintextMark(handler)
-	}
+	// 邮件通知后台投递（未配置 SMTP 时不启动）；随进程退出而停止。
+	mailCtx, stopMail := context.WithCancel(context.Background())
+	defer stopMail()
+	service.StartEmailOutbox(mailCtx, cfg, g, 30*time.Second)
+	engine := srv.Engine()
+	engine.Server = &http.Server{ReadHeaderTimeout: 10 * time.Second}
 
-	httpSrv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	go func() {
-		log.Printf("%s 启动于 http://%s", cfg.SiteName, cfg.Listen)
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("HTTP 服务异常退出: %v", err)
-		}
-	}()
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Println("正在关闭…")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = httpSrv.Shutdown(ctx)
+	go func() {
+		<-quit
+		log.Println("正在关闭…")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := engine.Shutdown(ctx); err != nil {
+			log.Fatalf("HTTP 服务关闭超时: %v", err)
+		}
+	}()
+	log.Printf("%s 启动于 http://%s", cfg.SiteName, cfg.Listen)
+	if err := engine.Start(cfg.Listen); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("HTTP 服务异常退出: %v", err)
+	}
 }
 
 func seedAdminCmd(args []string) {
@@ -177,7 +148,9 @@ func seedAdminCmd(args []string) {
 	username := fs.String("username", "", "管理员用户名")
 	email := fs.String("email", "", "邮箱")
 	password := fs.String("password", "", "密码（至少 8 位）")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("参数解析失败: %v", err)
+	}
 	cfg := loadCfg([]string{"-c", *cfgPath})
 	if cfg.ReadOnly {
 		log.Fatal("只读模式禁止创建或修改管理员")

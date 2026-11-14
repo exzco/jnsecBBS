@@ -24,6 +24,7 @@ type migration struct {
 var migrations = []migration{
 	{1, "go_notifications_and_invites", createNotificationsAndInvites},
 	{2, "go_user_profiles", createUserProfiles},
+	{3, "go_email_outbox", createEmailOutbox},
 }
 
 // Migrate explicitly upgrades Go-owned tables in an existing Flarum mirror.
@@ -148,4 +149,36 @@ func createUserProfiles(g *gorm.DB) error {
 		blog_url varchar(255) NOT NULL DEFAULT '',
 		updated_at datetime NOT NULL
 	)` + suffix).Error
+}
+
+func createEmailOutbox(g *gorm.DB) error {
+	suffix := ""
+	idColumn := "id integer PRIMARY KEY AUTOINCREMENT"
+	attemptsColumn := "attempts integer NOT NULL DEFAULT 0"
+	if g.Dialector.Name() == "mysql" {
+		suffix = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+		idColumn = "id int unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY"
+		attemptsColumn = "attempts int unsigned NOT NULL DEFAULT 0"
+	}
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS bbs_email_outbox (
+			` + idColumn + `,
+			recipient varchar(255) NOT NULL,
+			subject varchar(255) NOT NULL,
+			body text NOT NULL,
+			` + attemptsColumn + `,
+			sent_at datetime DEFAULT NULL,
+			last_error varchar(500) DEFAULT NULL,
+			created_at datetime NOT NULL
+		)` + suffix,
+	}
+	if g.Dialector.Name() != "mysql" {
+		statements = append(statements, `CREATE INDEX IF NOT EXISTS idx_bbs_email_outbox ON bbs_email_outbox (sent_at, id)`)
+	}
+	for _, statement := range statements {
+		if err := g.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

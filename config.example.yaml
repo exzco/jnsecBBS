@@ -20,3 +20,15 @@ log_level: "info"
 
 # Enable during one-way old-to-new data synchronization.
 read_only: true
+
+# 站点对外访问地址：邮件通知里的链接前缀，留空则邮件不含链接。
+# base_url: "https://bbs.jnsec.org"
+
+# 邮件通知（SMTP）。host 与 from 任一留空 = 关闭邮件通知。
+# 465 端口走隐式 TLS，其余端口协商 STARTTLS；username 留空 = 匿名发送。
+# smtp:
+#   host: ""
+#   port: 587
+#   username: ""
+#   password: ""
+#   from: "no-reply@jnsec.org"

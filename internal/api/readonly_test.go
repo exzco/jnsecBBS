@@ -6,12 +6,11 @@ import (
 	"testing"
 
 	"github.com/exzco/bbs/internal/config"
-	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
 )
 
 func TestReadOnlyRejectsAllForumWrites(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
+	r := echo.New()
 	New(&config.Config{ReadOnly: true}, nil).Register(r)
 	for _, path := range []string{"/api/discussions", "/api/discussions/1/reply", "/api/posts/1/edit", "/api/posts/1/like", "/api/auth/register", "/api/me/profile", "/api/me/avatar", "/api/me/password", "/api/admin/tags", "/api/admin/settings", "/api/me/notifications/read"} {
 		w := httptest.NewRecorder()

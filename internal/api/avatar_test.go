@@ -1,11 +1,14 @@
 package api
 
 import (
-	"github.com/exzco/bbs/internal/models"
 	"testing"
+
+	"github.com/exzco/bbs/internal/models"
+	"github.com/exzco/bbs/internal/service"
 )
 
 func TestLegacyAvatarURL(t *testing.T) {
+	var svc service.Service
 	for _, tc := range []struct{ stored, want string }{
 		{"abc.png", "/assets/avatars/abc.png"},
 		{"/avatars/abc.png", "/avatars/abc.png"},
@@ -15,7 +18,7 @@ func TestLegacyAvatarURL(t *testing.T) {
 		{"../secret", "/avatar/test.svg"},
 		{"", "/avatar/test.svg"},
 	} {
-		if got := avatarURL(&models.User{Username: "test", AvatarURL: tc.stored}); got != tc.want {
+		if got := svc.AvatarURL(&models.User{Username: "test", AvatarURL: tc.stored}); got != tc.want {
 			t.Errorf("%q: got %q want %q", tc.stored, got, tc.want)
 		}
 	}

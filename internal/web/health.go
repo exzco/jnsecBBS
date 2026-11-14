@@ -5,24 +5,22 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
 )
 
-func (s *Server) health(c *gin.Context) {
-	c.Header("Cache-Control", "no-store")
+func (s *Server) health(c echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "no-store")
 	if s.db == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
-		return
+		return c.JSON(http.StatusServiceUnavailable, echo.Map{"status": "unavailable"})
 	}
 	connection, err := s.db.DB()
 	if err == nil {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(c.Request().Context(), 2*time.Second)
 		defer cancel()
 		err = connection.PingContext(ctx)
 	}
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
-		return
+		return c.JSON(http.StatusServiceUnavailable, echo.Map{"status": "unavailable"})
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	return c.JSON(http.StatusOK, echo.Map{"status": "ok"})
 }

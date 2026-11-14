@@ -17,7 +17,7 @@ func nativeImportCmd(args []string) {
 	fs := flag.NewFlagSet("native-import", flag.ExitOnError)
 	initialize := fs.Bool("initialize", false, "initialize an empty native target")
 	readOnly := fs.Bool("read-only-target", false, "acknowledge native target has no forum writers")
-	_ = fs.Parse(args)
+	fs.Parse(args) // ExitOnError：解析失败时由 flag 包直接退出
 	if fs.NArg() != 0 {
 		log.Fatal("native-import accepts flags only; pass DSNs through environment variables")
 	}

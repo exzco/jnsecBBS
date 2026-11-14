@@ -25,3 +25,6 @@ image*
 # Agent scratchpad (temp scripts, logs, context handoffs)
 work/
 AGENTS.md
+agent.md
+*_test.go
+AGENT_SYNC.md

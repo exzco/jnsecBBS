@@ -2,6 +2,7 @@
 package web
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"hash/fnv"
 	"html"
@@ -17,7 +18,9 @@ import (
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/db"
 	"github.com/exzco/bbs/internal/frontend"
-	"github.com/gin-gonic/gin"
+	"github.com/gorilla/csrf"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"gorm.io/gorm"
 )
 
@@ -31,130 +34,135 @@ func New(cfg *config.Config, g *gorm.DB) (*Server, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 	if !cfg.ReadOnly {
-		_ = db.CleanupJoinTableDuplicates(g)
-		_ = db.SyncHiddenFirstPostDiscussions(g)
+		if err := db.CleanupJoinTableDuplicates(g); err != nil {
+			return nil, fmt.Errorf("cleanup join table duplicates: %w", err)
+		}
+		if err := db.SyncHiddenFirstPostDiscussions(g); err != nil {
+			return nil, fmt.Errorf("sync hidden first post discussions: %w", err)
+		}
 	}
 	return &Server{cfg: cfg, db: g}, nil
 }
 
+// Handler 返回 HTTP 处理器（Echo 引擎实现 http.Handler，供标准库互操作与测试使用）。
 func (s *Server) Handler() http.Handler {
-	if s.cfg.LogLevel != "debug" {
-		gin.SetMode(gin.ReleaseMode)
-	}
-	r := gin.New()
-	r.Use(gin.Recovery())
+	return s.Engine()
+}
+
+// Engine 组装 Echo 引擎：CSRF 校验、会话、REST API、静态资源与 SPA 兜底。
+func (s *Server) Engine() *echo.Echo {
+	e := echo.New()
+	e.HideBanner, e.HidePort = true, true
+	// 信任代理时从 X-Forwarded-For 取客户端 IP（限速、浏览量去重依赖）。
 	if s.cfg.TrustProxy {
-		_ = r.SetTrustedProxies([]string{"0.0.0.0/0"})
+		e.IPExtractor = echo.ExtractIPFromXFFHeader()
 	} else {
-		_ = r.SetTrustedProxies(nil)
+		e.IPExtractor = echo.ExtractIPDirect()
 	}
-	r.MaxMultipartMemory = 32 << 20
+	s.attachCSRF(e)
+	e.Use(middleware.Recover())
 	// Readiness must not depend on a browser session or expose database errors.
-	r.GET("/api/health", s.health)
-	r.Use(s.sessionMiddleware())
+	e.GET("/api/health", s.health)
+	e.Use(s.session())
 
 	// REST API
-	api.New(s.cfg, s.db).Register(r)
+	api.New(s.cfg, s.db).Register(e)
 
-	// 静态资源（/assets/* 头像与附件：优先检查 DataDir/assets，回退至 AssetsDir）
-	assetsDataDir := filepath.Join(s.cfg.DataDir, "assets")
-	serveAssets := func(c *gin.Context) {
-		rel := c.Param("filepath")
-		clean := filepath.Clean("/" + rel)
-		localPath := filepath.Join(assetsDataDir, clean)
-		if st, err := os.Stat(localPath); err == nil && !st.IsDir() {
-			c.File(localPath)
-			return
-		}
-		if s.cfg.AssetsDir != "" {
-			legacyPath := filepath.Join(s.cfg.AssetsDir, clean)
-			if st, err := os.Stat(legacyPath); err == nil && !st.IsDir() {
-				c.File(legacyPath)
-				return
+	// 磁盘目录伺服：/assets/* 头像与附件（优先 DataDir/assets，回退 AssetsDir），
+	// /avatars/* 上传头像。
+	serveDir := func(dirs []string) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			clean := filepath.Clean("/" + c.Param("*"))
+			for _, dir := range dirs {
+				local := filepath.Join(dir, clean)
+				if st, err := os.Stat(local); err == nil && !st.IsDir() {
+					return c.File(local)
+				}
 			}
+			return c.NoContent(http.StatusNotFound)
 		}
-		c.Status(http.StatusNotFound)
 	}
-	r.GET("/assets/*filepath", serveAssets)
-	r.HEAD("/assets/*filepath", serveAssets)
+	assetsDirs := []string{filepath.Join(s.cfg.DataDir, "assets")}
+	if s.cfg.AssetsDir != "" {
+		assetsDirs = append(assetsDirs, s.cfg.AssetsDir)
+	}
+	e.GET("/assets/*", serveDir(assetsDirs))
+	e.HEAD("/assets/*", serveDir(assetsDirs))
+	e.GET("/avatars/*", serveDir([]string{filepath.Join(s.cfg.DataDir, "avatars")}))
+	e.HEAD("/avatars/*", serveDir([]string{filepath.Join(s.cfg.DataDir, "avatars")}))
 
-	// 上传头像（磁盘目录）
-	r.Static("/avatars", filepath.Join(s.cfg.DataDir, "avatars"))
 	// 字环头像（确定性 SVG，可长缓存）
-	r.GET("/avatar/:name", s.letterAvatar)
+	e.GET("/avatar/:name", s.letterAvatar)
 	// 注册验证码图片（/captcha/{id}.png，?reload= 换一张）
-	r.GET("/captcha/:id", s.captchaImage)
+	e.GET("/captcha/:id", s.captchaImage)
 
 	// SPA：打包产物挂在 /static/（见 vite base），/assets/* 留给旧 Flarum 资源；
 	// 其余路径回退 index.html（React Router 接管）
-	r.NoRoute(func(c *gin.Context) {
-		path := strings.TrimPrefix(c.Request.URL.Path, "/")
-		// Missing API/media URLs must not fall back to the SPA with status 200.
-		if strings.HasPrefix(path, "api/") || path == "api" {
-			c.JSON(http.StatusNotFound, gin.H{"error": "接口不存在。"})
-			return
-		}
-		if strings.HasPrefix(path, "assets/") || strings.HasPrefix(path, "avatars/") {
-			c.Status(http.StatusNotFound)
-			return
-		}
-		if path == "" {
-			path = "index.html"
-		}
-		// vite base=/static/：URL 带 /static 前缀，但产物在 dist 根下
-		distPath := strings.TrimPrefix(path, "static/")
-		// index.html 直接输出内容（http.FileServer 会把 /index.html 301 到 ./）
-		if distPath == "index.html" || (!strings.HasPrefix(path, "static/") && !strings.Contains(distPath, ".")) {
-			s.serveIndex(c)
-			return
-		}
-		distFS, _ := fs.Sub(frontend.Dist, "dist")
-		if f, err := distFS.Open(distPath); err == nil {
-			st, err := f.Stat()
-			_ = f.Close()
-			if err == nil && !st.IsDir() {
-				// vite 产物文件名带内容哈希，可 immutable 长缓存
-				if strings.HasPrefix(path, "static/assets/") {
-					c.Header("Cache-Control", "public, max-age=31536000, immutable")
-				}
-				c.FileFromFS(distPath, http.FS(distFS))
-				return
-			}
-		}
-		// /static/ 下带扩展名的未知路径按 404 处理：不能把 index.html 当
-		// CSS/JS 返回，否则改版后旧 HTML 引用旧哈希文件名时会出现 MIME 不符
-		if strings.HasPrefix(path, "static/") {
-			c.Status(http.StatusNotFound)
-			return
-		}
-		s.serveIndex(c)
-	})
-	return r
-}
-
-// serveIndex 输出 SPA 入口。必须 no-cache：浏览器/CDN 缓存的旧 HTML 会引用
-// 已不存在的哈希资源文件，页面会整体塌掉。
-func (s *Server) serveIndex(c *gin.Context) {
-	index, err := fs.ReadFile(frontend.Dist, "dist/index.html")
-	if err != nil {
-		c.String(http.StatusInternalServerError, "前端未构建：请在 frontend/ 执行 bun run build 后重新编译。")
-		return
-	}
-	c.Header("Cache-Control", "no-cache")
-	c.Data(http.StatusOK, "text/html; charset=utf-8", index)
+	e.GET("/*", s.serveSPA)
+	e.HEAD("/*", s.serveSPA)
+	return e
 }
 
 // ---------- 会话中间件 ----------
 
-func (s *Server) sessionMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		u, token := auth.UserFromRequest(s.db, c.Request)
-		c.Set("user", u)
-		if token != nil {
-			c.Set("token", token.Token)
+func (s *Server) session() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			u, token := auth.UserFromRequest(s.db, c.Request())
+			c.Set("user", u)
+			if token != nil {
+				c.Set("token", token.Token)
+			}
+			return next(c)
 		}
-		c.Next()
 	}
+}
+
+// serveSPA 兜底路由：/static/ 下输出打包产物，其余回退 index.html。
+func (s *Server) serveSPA(c echo.Context) error {
+	path := strings.TrimPrefix(c.Request().URL.Path, "/")
+	// Missing API/media URLs must not fall back to the SPA with status 200.
+	if strings.HasPrefix(path, "api/") || path == "api" {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "接口不存在。"})
+	}
+	if strings.HasPrefix(path, "assets/") || strings.HasPrefix(path, "avatars/") {
+		return c.NoContent(http.StatusNotFound)
+	}
+	if path == "" {
+		path = "index.html"
+	}
+	// vite base=/static/：URL 带 /static 前缀，但产物在 dist 根下
+	distPath := strings.TrimPrefix(path, "static/")
+	// index.html 直接输出内容（文件伺服会把 /index.html 301 到 ./）
+	if distPath == "index.html" || (!strings.HasPrefix(path, "static/") && !strings.Contains(distPath, ".")) {
+		return s.serveIndex(c)
+	}
+	distFS, _ := fs.Sub(frontend.Dist, "dist")
+	if st, err := fs.Stat(distFS, distPath); err == nil && !st.IsDir() {
+		// vite 产物文件名带内容哈希，可 immutable 长缓存
+		if strings.HasPrefix(path, "static/assets/") {
+			c.Response().Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+		http.ServeFileFS(c.Response(), c.Request(), distFS, distPath)
+		return nil
+	}
+	// /static/ 下带扩展名的未知路径按 404 处理：不能把 index.html 当
+	// CSS/JS 返回，否则改版后旧 HTML 引用旧哈希文件名时会出现 MIME 不符
+	if strings.HasPrefix(path, "static/") {
+		return c.NoContent(http.StatusNotFound)
+	}
+	return s.serveIndex(c)
+}
+
+// serveIndex 输出 SPA 入口。必须 no-cache：浏览器/CDN 缓存的旧 HTML 会引用
+// 已不存在的哈希资源文件，页面会整体塌掉。
+func (s *Server) serveIndex(c echo.Context) error {
+	index, err := fs.ReadFile(frontend.Dist, "dist/index.html")
+	if err != nil {
+		return c.String(http.StatusInternalServerError, "前端未构建：请在 frontend/ 执行 bun run build 后重新编译。")
+	}
+	c.Response().Header().Set("Cache-Control", "no-cache")
+	return c.Blob(http.StatusOK, "text/html; charset=utf-8", index)
 }
 
 // ---------- 静态小端点 ----------
@@ -162,7 +170,7 @@ func (s *Server) sessionMiddleware() gin.HandlerFunc {
 var avatarPalette = []string{"#1e88e5", "#43a047", "#e53935", "#8e24aa", "#f4511e", "#00897b", "#3949ab", "#d81b60", "#6d4c41", "#7cb342"}
 
 // letterAvatar 生成用户名首字的 SVG 头像（确定性颜色，可长缓存）。
-func (s *Server) letterAvatar(c *gin.Context) {
+func (s *Server) letterAvatar(c echo.Context) error {
 	name := strings.TrimSuffix(c.Param("name"), ".svg")
 	name = strings.TrimPrefix(name, "/")
 	first := "?"
@@ -177,20 +185,56 @@ func (s *Server) letterAvatar(c *gin.Context) {
 		`<rect width="128" height="128" rx="64" fill="%s"/>`+
 		`<text x="64" y="64" dy="0.36em" text-anchor="middle" font-family="system-ui, sans-serif" font-size="56" fill="#fff">%s</text></svg>`,
 		color, html.EscapeString(first))
-	c.Header("Cache-Control", "public, max-age=86400")
-	c.Data(http.StatusOK, "image/svg+xml", []byte(svg))
+	c.Response().Header().Set("Cache-Control", "public, max-age=86400")
+	return c.Blob(http.StatusOK, "image/svg+xml", []byte(svg))
 }
 
 // captchaImage 输出注册验证码图片。
-func (s *Server) captchaImage(c *gin.Context) {
+func (s *Server) captchaImage(c echo.Context) error {
 	id := strings.TrimSuffix(strings.TrimPrefix(c.Param("id"), "/"), ".png")
-	if c.Query("reload") != "" {
+	if c.QueryParam("reload") != "" {
 		captcha.Reload(id)
 	}
-	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
-	c.Header("Pragma", "no-cache")
-	c.Header("Content-Type", "image/png")
-	if err := captcha.WriteImage(c.Writer, id, captcha.StdWidth*2, captcha.StdHeight*2); err != nil {
-		c.Status(http.StatusNotFound)
+	c.Response().Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Response().Header().Set("Pragma", "no-cache")
+	c.Response().Header().Set("Content-Type", "image/png")
+	if err := captcha.WriteImage(c.Response(), id, captcha.StdWidth*2, captcha.StdHeight*2); err != nil {
+		return c.NoContent(http.StatusNotFound)
 	}
+	return nil
+}
+
+// csrfKey 保证 32 字节：过短时用 SHA-256 派生。
+func csrfKey(secret string) []byte {
+	if len(secret) >= 32 {
+		return []byte(secret)
+	}
+	sum := sha256.Sum256([]byte("jnsec-bbs-csrf:" + secret))
+	return sum[:]
+}
+
+// attachCSRF 把 gorilla/csrf 校验挂到引擎最外层（pre-router），与迁移前 csrf 包裹整个引擎的顺序一致；
+// 明文 HTTP 部署先在请求上打标放宽 Origin/Referer 比对，否则写请求会全部 403。
+func (s *Server) attachCSRF(e *echo.Echo) {
+	opts := []csrf.Option{
+		csrf.Secure(s.cfg.CookieSecure),
+		csrf.CookieName("jnsec_csrf"),
+		csrf.FieldName("_csrf"),
+		csrf.RequestHeader("X-CSRF-Token"),
+	}
+	if len(s.cfg.TrustedOrigins) > 0 {
+		opts = append(opts, csrf.TrustedOrigins(s.cfg.TrustedOrigins))
+	}
+	opts = append(opts, csrf.ErrorHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, fmt.Sprintf("CSRF 校验失败，请刷新页面重试。（原因: %v）", csrf.FailureReason(r)), http.StatusForbidden)
+	})))
+	protect := csrf.Protect(csrfKey(s.cfg.SessionSecret), opts...)
+	e.Pre(echo.WrapMiddleware(func(next http.Handler) http.Handler {
+		if s.cfg.CookieSecure {
+			return protect(next)
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			protect(next).ServeHTTP(w, csrf.PlaintextHTTPRequest(r))
+		})
+	}))
 }

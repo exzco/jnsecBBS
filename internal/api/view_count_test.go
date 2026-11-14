@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/exzco/bbs/internal/models"
+	"github.com/exzco/bbs/internal/service"
 )
 
 func TestDiscussionViewCountAndViewers(t *testing.T) {
@@ -50,8 +51,8 @@ func TestDiscussionViewCountAndViewers(t *testing.T) {
 	}
 
 	var res struct {
-		Discussion DiscussionSummaryDTO  `json:"discussion"`
-		Viewers    []DiscussionViewerDTO `json:"viewers"`
+		Discussion service.DiscussionSummaryDTO  `json:"discussion"`
+		Viewers    []service.DiscussionViewerDTO `json:"viewers"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
 		t.Fatalf("unmarshal response failed: %v", err)
@@ -79,8 +80,8 @@ func TestDiscussionViewCountAndViewers(t *testing.T) {
 	}
 
 	var res2 struct {
-		Discussion DiscussionSummaryDTO  `json:"discussion"`
-		Viewers    []DiscussionViewerDTO `json:"viewers"`
+		Discussion service.DiscussionSummaryDTO  `json:"discussion"`
+		Viewers    []service.DiscussionViewerDTO `json:"viewers"`
 	}
 	if err := json.Unmarshal(w2.Body.Bytes(), &res2); err != nil {
 		t.Fatalf("unmarshal response failed: %v", err)

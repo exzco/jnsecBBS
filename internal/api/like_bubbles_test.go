@@ -11,7 +11,8 @@ import (
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/db"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/gin-gonic/gin"
+	"github.com/exzco/bbs/internal/service"
+	"github.com/labstack/echo/v4"
 )
 
 func TestPostLikeBubbles(t *testing.T) {
@@ -62,7 +63,7 @@ func TestPostLikeBubbles(t *testing.T) {
 	}
 
 	var res struct {
-		Posts []PostDTO `json:"posts"`
+		Posts []service.PostDTO `json:"posts"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
 		t.Fatal(err)
@@ -85,9 +86,9 @@ func TestPostLikeBubbles(t *testing.T) {
 		t.Fatalf("expected 200 on like, got %d: %s", w.Code, w.Body.String())
 	}
 	var likeRes struct {
-		Liked     bool      `json:"liked"`
-		LikeCount int       `json:"likeCount"`
-		Likers    []UserDTO `json:"likers"`
+		Liked     bool              `json:"liked"`
+		LikeCount int               `json:"likeCount"`
+		Likers    []service.UserDTO `json:"likers"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &likeRes); err != nil {
 		t.Fatal(err)
@@ -112,7 +113,7 @@ func TestPostLikeBubbles(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	res = struct {
-		Posts []PostDTO `json:"posts"`
+		Posts []service.PostDTO `json:"posts"`
 	}{}
 	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
 		t.Fatal(err)
@@ -137,9 +138,9 @@ func TestPostLikeBubbles(t *testing.T) {
 		t.Fatalf("expected 200 on unlike, got %d: %s", w.Code, w.Body.String())
 	}
 	likeRes = struct {
-		Liked     bool      `json:"liked"`
-		LikeCount int       `json:"likeCount"`
-		Likers    []UserDTO `json:"likers"`
+		Liked     bool              `json:"liked"`
+		LikeCount int               `json:"likeCount"`
+		Likers    []service.UserDTO `json:"likers"`
 	}{}
 	if err := json.Unmarshal(w.Body.Bytes(), &likeRes); err != nil {
 		t.Fatal(err)
@@ -177,7 +178,7 @@ func TestPostLikeBubbles(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	res = struct {
-		Posts []PostDTO `json:"posts"`
+		Posts []service.PostDTO `json:"posts"`
 	}{}
 	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
 		t.Fatal(err)
@@ -208,8 +209,8 @@ func TestPostLikeUnauthorized(t *testing.T) {
 	if err := db.InitializeEmpty(g); err != nil {
 		t.Fatal(err)
 	}
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
+	router := echo.New()
+	resetCache()
 	New(&config.Config{}, g).Register(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/posts/1/like", nil)

@@ -6,10 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/exzco/bbs/internal/cache"
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/db"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
 )
 
 func TestRestrictedContentCannotLeakAcrossEndpoints(t *testing.T) {
@@ -41,9 +42,11 @@ func TestRestrictedContentCannotLeakAcrossEndpoints(t *testing.T) {
 	if err = g.Create(&post).Error; err != nil {
 		t.Fatal(err)
 	}
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.Use(func(c *gin.Context) { c.Set("user", &user); c.Next() })
+	r := echo.New()
+	resetCache()
+	r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error { c.Set("user", &user); return next(c) }
+	})
 	New(&config.Config{}, g).Register(r)
 	for _, path := range []string{"/api/home", "/api/search?q=needle", "/api/users/reader", "/api/tags/general/discussions"} {
 		w := httptest.NewRecorder()
@@ -69,6 +72,8 @@ func TestRestrictedContentCannotLeakAcrossEndpoints(t *testing.T) {
 	if err = g.Create(&models.GroupPermission{GroupID: models.GroupMember, Permission: fmt.Sprintf("tag%d.viewDiscussions", private.ID)}).Error; err != nil {
 		t.Fatal(err)
 	}
+	// 直写权限表绕过了 API 的失效路径，手动失效 tag:perms:all。
+	cache.Default.Delete(cache.TagPermsKey())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", fmt.Sprintf("/api/discussions/%d", disc.ID), nil))
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "secret-needle") {

@@ -14,8 +14,9 @@ import (
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/db"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/gin-gonic/gin"
+	"github.com/exzco/bbs/internal/service"
 	mysql "github.com/go-sql-driver/mysql"
+	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
 
@@ -25,7 +26,7 @@ type replyResult struct {
 	Page   int  `json:"page"`
 }
 
-func requestReply(router *gin.Engine, discussionID uint) *httptest.ResponseRecorder {
+func requestReply(router *echo.Echo, discussionID uint) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/discussions/%d/reply", discussionID), strings.NewReader(`{"content":"回归测试回复"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -206,12 +207,14 @@ func TestReplyConcurrentMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := seedReplyDiscussion(t, g, user, []int{100}, 100)
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	router.Use(func(c *gin.Context) { c.Set("user", user); c.Next() })
+	router := echo.New()
+	resetCache()
+	router.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error { c.Set("user", user); return next(c) }
+	})
 	s := New(&config.Config{}, g)
 	// Test the real reply handler without the unrelated per-user rate limiter.
-	router.POST("/api/discussions/:id/reply", s.requireUser(), s.reply)
+	router.POST("/api/discussions/:id/reply", s.h(s.reply), s.requireUser())
 
 	// Force every request to preload the same stale discussion before any starts
 	// its transaction. A single connection or sequential requests hide this bug.
@@ -256,7 +259,7 @@ func TestReplyConcurrentMySQL(t *testing.T) {
 	seen := make(map[int]uint, workers)
 	for _, w := range responses {
 		result := decodeReply(t, w)
-		if result.Number < 101 || result.Number > 100+workers || result.PostID == 0 || seen[result.Number] != 0 || result.Page != (result.Number-100)/perPagePosts+1 {
+		if result.Number < 101 || result.Number > 100+workers || result.PostID == 0 || seen[result.Number] != 0 || result.Page != (result.Number-100)/service.PerPagePosts+1 {
 			t.Fatalf("duplicate/incorrect concurrent reply: %+v", result)
 		}
 		seen[result.Number] = result.PostID

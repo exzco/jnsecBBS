@@ -8,14 +8,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/exzco/bbs/internal/cache"
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/db"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/gin-gonic/gin"
+	"github.com/exzco/bbs/internal/service"
+	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
 
-func profileTestServer(t *testing.T) (*gorm.DB, *models.User, *gin.Engine) {
+// resetCache 每个用例都是独立数据库且可能直写权限表（绕过 API 失效路径），
+// 而缓存是进程级单例，必须按用例清空，避免跨用例/跨库串味。
+func resetCache() {
+	for _, p := range []string{"tag:", "setting:", "user:", "session:"} {
+		cache.Default.DeletePrefix(p)
+	}
+}
+
+func profileTestServer(t *testing.T) (*gorm.DB, *models.User, *echo.Echo) {
 	t.Helper()
 	g, err := db.Open("sqlite", ":memory:")
 	if err != nil {
@@ -30,6 +40,7 @@ func profileTestServer(t *testing.T) (*gorm.DB, *models.User, *gin.Engine) {
 	if err := db.InitializeEmpty(g); err != nil {
 		t.Fatal(err)
 	}
+	resetCache()
 	user := &models.User{Username: "profile-user", Email: "profile@example.org", Bio: "old bio"}
 	if err := g.Create(user).Error; err != nil {
 		t.Fatal(err)
@@ -37,14 +48,15 @@ func profileTestServer(t *testing.T) (*gorm.DB, *models.User, *gin.Engine) {
 	if err := g.Create(&models.UserProfile{UserID: user.ID, RealName: "原名", BlogURL: "https://old.example.org", UpdatedAt: time.Now()}).Error; err != nil {
 		t.Fatal(err)
 	}
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.Use(func(c *gin.Context) { c.Set("user", user); c.Next() })
+	r := echo.New()
+	r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error { c.Set("user", user); return next(c) }
+	})
 	New(&config.Config{}, g).Register(r)
 	return g, user, r
 }
 
-func requestProfile(r *gin.Engine, body string) *httptest.ResponseRecorder {
+func requestProfile(r *echo.Echo, body string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/me/profile", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -134,9 +146,9 @@ func TestProfileCommitsAndPreservesOmittedFields(t *testing.T) {
 			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 		}
 		var response struct {
-			User     UserDTO `json:"user"`
-			RealName string  `json:"realName"`
-			BlogURL  string  `json:"blogUrl"`
+			User     service.UserDTO `json:"user"`
+			RealName string          `json:"realName"`
+			BlogURL  string          `json:"blogUrl"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)

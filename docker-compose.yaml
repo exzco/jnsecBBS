@@ -69,6 +69,13 @@ services:
       JNSEC_ASSETS_DIR: ${ASSETS_DIR:-/flarum/public/assets}
       JNSEC_REGISTRATION: ${REGISTRATION}
       JNSEC_READ_ONLY: ${READ_ONLY:-false}
+      # 邮件通知（SMTP）：值由服务器 .env 提供，全空 = 功能关闭
+      JNSEC_SITE_URL: ${SITE_URL:-}
+      JNSEC_SMTP_HOST: ${SMTP_HOST:-}
+      JNSEC_SMTP_PORT: ${SMTP_PORT:-587}
+      JNSEC_SMTP_USERNAME: ${SMTP_USERNAME:-}
+      JNSEC_SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      JNSEC_SMTP_FROM: ${SMTP_FROM:-}
       TZ: ${TZ}
     volumes:
       - appdata:/app/data

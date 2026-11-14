@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/exzco/bbs/internal/models"
+	"github.com/exzco/bbs/internal/service"
 )
 
 func TestAdminUsersPaginationAndSearch(t *testing.T) {
@@ -32,8 +33,8 @@ func TestAdminUsersPaginationAndSearch(t *testing.T) {
 	}
 
 	type response struct {
-		Users []adminUserRow `json:"users"`
-		Page  PageDTO        `json:"page"`
+		Users []adminUserRow  `json:"users"`
+		Page  service.PageDTO `json:"page"`
 	}
 
 	// 1. Page 1 with per_page=10

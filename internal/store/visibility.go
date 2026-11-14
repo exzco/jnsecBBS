@@ -11,19 +11,18 @@ import (
 // multi-tag discussions cannot leak via a public tag, search, or user profile.
 func VisibleDiscussions(g *gorm.DB, u *models.User) *gorm.DB {
 	query := g.Model(&models.Discussion{}).Where("flarum_discussions.is_private = ?", false)
-	var tags []models.Tag
-	if err := g.Find(&tags).Error; err != nil {
-		return query.Where("1 = 0")
-	}
+	// LoadTagPerms 自带缓存（tag:perms:all）；拒绝集直接由缓存内的全量版块
+	// 推导，不再额外整表扫描 flarum_tags。
 	tp := auth.LoadTagPerms(g)
-	auth.FillTagPerms(g, tags, tp)
 	if tp.Failed {
 		return query.Where("1 = 0")
 	}
 	denied := []uint{}
-	for i := range tags {
-		if !auth.CanViewTag(u, &tags[i]) {
-			denied = append(denied, tags[i].ID)
+	for id, tag := range tp.Tags {
+		t := tag
+		auth.FillTagPerm(g, &t, tp)
+		if !auth.CanViewTag(u, &t) {
+			denied = append(denied, id)
 		}
 	}
 	if len(denied) > 0 {

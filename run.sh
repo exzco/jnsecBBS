@@ -152,6 +152,11 @@ print_step "启动应用容器 (docker-compose up -d --no-deps app)..."
 docker-compose up -d --no-deps app
 print_success "容器启动完成"
 
+# 5.1 应用数据库迁移（幂等：已迁移到最新版本时为空操作）
+print_step "应用数据库迁移 (bbs migrate-db)..."
+docker-compose exec -T app /app/bbs migrate-db
+print_success "数据库迁移完成"
+
 print_step "检查容器运行状态 (bbs-app)..."
 docker ps -a --filter name=bbs-app
 
