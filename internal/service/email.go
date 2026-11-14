@@ -55,17 +55,21 @@ func (s *Service) enqueueEmail(tx *gorm.DB, to, subject, body string) error {
 	return tx.Create(&EmailOutbox{Recipient: to, Subject: subject, Body: body, CreatedAt: time.Now()}).Error
 }
 
-// enqueueReplyEmail 给讨论楼主排一封回复通知邮件（楼主邮箱来自注册/绑定信息）。
-func (s *Service) enqueueReplyEmail(tx *gorm.DB, replier *models.User, d *models.Discussion, number int) error {
+// enqueueReplyEmail 给讨论楼主排一封回复通知邮件（含回复内容，超长截断）。
+func (s *Service) enqueueReplyEmail(tx *gorm.DB, replier *models.User, d *models.Discussion, number int, content string) error {
 	to := d.User.Email
 	if to == "" {
 		return nil
 	}
 	subject := fmt.Sprintf("[站内通知] %s 回复了你的讨论《%s》", replier.Username, d.Title)
+	text := content
+	if runes := []rune(text); len(runes) > 2000 {
+		text = string(runes[:2000]) + "\n……（内容较长，已截断，请到站内查看全文）"
+	}
 	var body strings.Builder
-	fmt.Fprintf(&body, "%s 回复了你的讨论《%s》（第 %d 楼）。\n\n", replier.Username, d.Title, number)
+	fmt.Fprintf(&body, "%s 回复了你的讨论《%s》（第 %d 楼）：\n\n%s\n", replier.Username, d.Title, number, text)
 	if s.cfg.BaseURL != "" {
-		fmt.Fprintf(&body, "查看：%s/d/%d-%s\n\n", s.cfg.BaseURL, d.ID, d.Slug())
+		fmt.Fprintf(&body, "\n查看：%s/d/%d-%s\n\n", s.cfg.BaseURL, d.ID, d.Slug())
 	}
 	body.WriteString("--\n本邮件由系统自动发送，请勿直接回复。")
 	return s.enqueueEmail(tx, to, subject, body.String())

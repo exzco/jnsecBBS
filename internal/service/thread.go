@@ -522,7 +522,7 @@ func (s *Service) Reply(u *models.User, discussionID uint, content string) (Repl
 				return err
 			}
 			// 邮件通知楼主：outbox 行与本事务同库落库，由后台任务投递。
-			if err := s.enqueueReplyEmail(tx, u, d, nextNumber); err != nil {
+			if err := s.enqueueReplyEmail(tx, u, d, nextNumber, content); err != nil {
 				return err
 			}
 		}
