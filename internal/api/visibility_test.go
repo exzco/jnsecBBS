@@ -80,3 +80,82 @@ func TestRestrictedContentCannotLeakAcrossEndpoints(t *testing.T) {
 		t.Fatalf("granted member cannot read: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestPostFormAndPostingWithoutChildTag(t *testing.T) {
+	g, err := db.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := g.DB()
+	sqlDB.SetMaxOpenConns(1)
+	defer sqlDB.Close()
+	if err = db.InitializeEmpty(g); err != nil {
+		t.Fatal(err)
+	}
+	resetCache()
+
+	user := models.User{Username: "author", Email: "author@example.org"}
+	if err = g.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	pos1, pos2, pos3 := 1, 2, 1
+	parentTech := models.Tag{Name: "技术讨论", Slug: "tech", Position: &pos1}
+	if err = g.Create(&parentTech).Error; err != nil {
+		t.Fatal(err)
+	}
+	childFE := models.Tag{Name: "前端开发", Slug: "frontend", ParentID: &parentTech.ID, Position: &pos3}
+	if err = g.Create(&childFE).Error; err != nil {
+		t.Fatal(err)
+	}
+	parentNotice := models.Tag{Name: "公告版块", Slug: "notice", Position: &pos2}
+	if err = g.Create(&parentNotice).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	r := echo.New()
+	r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error { c.Set("user", &user); return next(c) }
+	})
+	server := New(&config.Config{}, g)
+	server.Register(r)
+
+	// 1. 测试 PostForm：有子版块的父版块 children 仅包含子标签；无子版块的父版块 children 为空
+	groups := server.svc.PostForm(&user)
+	var foundTech, foundNotice bool
+	for _, grp := range groups {
+		if grp.Parent.Slug == "tech" {
+			foundTech = true
+			if len(grp.Children) != 1 || grp.Children[0].Slug != "frontend" {
+				t.Fatalf("tech group children mismatch: got %+v", grp.Children)
+			}
+		}
+		if grp.Parent.Slug == "notice" {
+			foundNotice = true
+			if len(grp.Children) != 0 {
+				t.Fatalf("notice group children should be empty, got %+v", grp.Children)
+			}
+		}
+	}
+	if !foundTech || !foundNotice {
+		t.Fatalf("missing groups in PostForm: foundTech=%v foundNotice=%v", foundTech, foundNotice)
+	}
+
+	// 2. 测试发帖：允许不选择任何一个子标签，仅选择父版块 tech 发帖
+	resOnlyParent, errSvc := server.svc.CreateDiscussion(&user, "仅选择父版块发帖测试", "正文内容无需子标签", []uint{parentTech.ID})
+	if errSvc != nil {
+		t.Fatalf("create discussion with only parent tag failed: %v", errSvc.Message)
+	}
+	if resOnlyParent.ID == 0 {
+		t.Fatal("expected valid discussion ID")
+	}
+
+	// 3. 验证讨论在父版块 tech 下可见
+	listResult, errList := server.svc.TagDiscussions(&user, "tech", 1, false)
+	if errList != nil {
+		t.Fatalf("failed to query tag discussions: %v", errList.Message)
+	}
+	if len(listResult.Items) == 0 || listResult.Items[0].ID != resOnlyParent.ID {
+		t.Fatalf("discussion not found in parent tag discussions: %+v", listResult.Items)
+	}
+}

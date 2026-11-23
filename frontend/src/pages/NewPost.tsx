@@ -63,7 +63,7 @@ export default function NewPostPage() {
     toast.info("已清空草稿")
   }
 
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ["postForm"],
     queryFn: () => api<PostForm>("/api/post-form"),
   })
@@ -82,8 +82,32 @@ export default function NewPostPage() {
     onError: (e) => toast.error((e as Error).message),
   })
 
-  function toggleTag(id: number) {
-    setTagIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
+  function toggleParent(g: PostForm["groups"][number]) {
+    const childIds = g.children.map((c) => c.id)
+    const isSelected = tagIds.includes(g.parent.id) || childIds.some((id) => tagIds.includes(id))
+    if (isSelected) {
+      setTagIds((cur) => cur.filter((id) => id !== g.parent.id && !childIds.includes(id)))
+    } else {
+      if (tagIds.length >= 5) {
+        toast.warning("最多只能选择 5 个版块/标签")
+        return
+      }
+      setTagIds((cur) => [...cur, g.parent.id])
+    }
+  }
+
+  function toggleChild(g: PostForm["groups"][number], childId: number) {
+    if (tagIds.includes(childId)) {
+      setTagIds((cur) => cur.filter((id) => id !== childId))
+    } else {
+      const needParent = !tagIds.includes(g.parent.id)
+      const additionalCount = needParent ? 2 : 1
+      if (tagIds.length + additionalCount > 5) {
+        toast.warning("最多只能选择 5 个版块/标签")
+        return
+      }
+      setTagIds((cur) => (needParent ? [...cur, g.parent.id, childId] : [...cur, childId]))
+    }
   }
 
   const hasDraft = Boolean(title.trim() || content.trim() || tagIds.length > 0)
@@ -109,38 +133,72 @@ export default function NewPostPage() {
           </div>
 
           <div className="space-y-2">
-            <Label>版块（可多选）</Label>
-            {(data?.groups.length ?? 0) === 0 && (
+            <Label>版块与标签（可多选）</Label>
+            {!isLoading && (data?.groups.length ?? 0) === 0 && (
               <Alert>
                 <AlertDescription>没有可选的版块，请联系管理员。</AlertDescription>
               </Alert>
             )}
             <div className="space-y-3">
-              {data?.groups.map((g) => (
-                <div key={g.parent.id}>
-                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">{g.parent.name}</div>
-                  <div className="flex flex-wrap gap-2">
-                    {g.children.map((t) => (
+              {data?.groups.map((g) => {
+                const childIds = g.children.map((c) => c.id)
+                const isParentSelected =
+                  tagIds.includes(g.parent.id) || childIds.some((id) => tagIds.includes(id))
+                const hasChildren = g.children.length > 0
+                return (
+                  <div
+                    key={g.parent.id}
+                    className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2.5 transition-colors"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
                       <label
-                        key={t.id}
-                        className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                          tagIds.includes(t.id)
-                            ? "border-primary bg-primary text-primary-foreground"
-                            : "hover:bg-secondary"
+                        className={`cursor-pointer rounded-full border px-3 py-1 text-xs font-semibold transition-all ${
+                          isParentSelected
+                            ? "border-primary bg-primary text-primary-foreground shadow-xs"
+                            : "hover:bg-secondary border-border bg-card text-foreground"
                         }`}
                       >
                         <input
                           type="checkbox"
                           className="hidden"
-                          checked={tagIds.includes(t.id)}
-                          onChange={() => toggleTag(t.id)}
+                          checked={isParentSelected}
+                          onChange={() => toggleParent(g)}
                         />
-                        {t.name}
+                        {g.parent.name}
                       </label>
-                    ))}
+                      <span className="text-[11px] text-muted-foreground">
+                        {hasChildren ? "（主版块，子标签可选）" : "（主版块）"}
+                      </span>
+                    </div>
+
+                    {hasChildren && (
+                      <div className="flex flex-wrap items-center gap-2 pl-2 border-l-2 border-border/60">
+                        {g.children.map((t) => {
+                          const isChildSelected = tagIds.includes(t.id)
+                          return (
+                            <label
+                              key={t.id}
+                              className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors ${
+                                isChildSelected
+                                  ? "border-primary bg-primary/90 text-primary-foreground shadow-xs"
+                                  : "hover:bg-secondary border-border/80 bg-background text-muted-foreground hover:text-foreground"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="hidden"
+                                checked={isChildSelected}
+                                onChange={() => toggleChild(g, t.id)}
+                              />
+                              {t.name}
+                            </label>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
 

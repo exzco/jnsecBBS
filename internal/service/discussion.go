@@ -300,9 +300,6 @@ func (s *Service) PostForm(u *models.User) []PostFormGroup {
 		for _, ch := range byParent[top.ID] {
 			g.Children = append(g.Children, s.TagDTO(&ch, u))
 		}
-		if len(g.Children) == 0 {
-			g.Children = append(g.Children, s.TagDTO(&top, u))
-		}
 		groups = append(groups, g)
 	}
 	return groups
