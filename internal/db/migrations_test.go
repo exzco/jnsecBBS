@@ -69,8 +69,11 @@ func TestExplicitMigrationsPreserveLegacySchemaAndData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 4 {
+	if len(history) != len(migrations) {
 		t.Fatalf("migration history=%+v", history)
+	}
+	if !g.Migrator().HasTable("bbs_discussion_read_positions") {
+		t.Fatal("missing bbs_discussion_read_positions table after Migrate")
 	}
 	for _, row := range history {
 		if row.AppliedAt.IsZero() {

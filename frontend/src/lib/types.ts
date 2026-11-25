@@ -109,6 +109,12 @@ export interface DiscussionViewer {
   visitedAt: string
 }
 
+export interface ReadProgress {
+  postId: number
+  postNumber: number
+  updatedAt: string
+}
+
 export interface DiscussionDetail {
   discussion: DiscussionSummary
   posts: Post[]
@@ -119,6 +125,7 @@ export interface DiscussionDetail {
   viewers?: DiscussionViewer[]
   isWeekly?: boolean
   windowDays?: number
+  readProgress?: ReadProgress
 }
 
 export interface ProfileData {

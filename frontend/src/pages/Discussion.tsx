@@ -36,6 +36,30 @@ export function InlineDiscussion({ id, onBack }: { id: number; onBack: () => voi
   return <DiscussionView id={id} onBack={onBack} />
 }
 
+function detectVisiblePost(posts: Post[], scroller: HTMLElement): { postId: number; postNumber: number } | null {
+  if (posts.length === 0) return null
+  const atBottom =
+    scroller.scrollHeight > scroller.clientHeight &&
+    scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight) <= 24
+  if (atBottom) {
+    const last = posts[posts.length - 1]
+    return { postId: last.id, postNumber: last.number }
+  }
+  const scrollerTop = scroller === document.documentElement ? 0 : scroller.getBoundingClientRect().top
+  const threshold = scrollerTop + 84
+  for (const p of posts) {
+    const el = document.getElementById(`post-${p.id}`)
+    if (el) {
+      const rect = el.getBoundingClientRect()
+      if (rect.bottom > threshold) {
+        return { postId: p.id, postNumber: p.number }
+      }
+    }
+  }
+  const first = posts[0]
+  return { postId: first.id, postNumber: first.number }
+}
+
 function DiscussionView({
   id,
   idSlug = "",
@@ -50,11 +74,13 @@ function DiscussionView({
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const { data: session } = useSession()
 
-  const { data, isError, error } = useQuery({
+  const { data, isError, error, isFetching } = useQuery({
     queryKey: ["discussion", id],
     queryFn: () => api<DiscussionDetail>(`/api/discussions/${id}?all=1`),
     retry: false,
+    refetchOnWindowFocus: true,
   })
 
   // 1. 同步更新所有讨论流的已读缓存，确保返回列表时未读点即时消除
@@ -64,59 +90,123 @@ function DiscussionView({
     }
   }, [data, id, qc])
 
-  // 2. 监听用户滚动，记忆当前帖子的阅读楼层与位置（持久化到 localStorage）
+  const initialRestoredRef = useRef(false)
+  const userInteractedRef = useRef(false)
+  const suppressScrollReportUntilRef = useRef(0)
+  const lastSyncTsRef = useRef(0)
+  const lastReportedPostIdRef = useRef<number | null>(null)
+  const pendingPosRef = useRef<{ postId: number; postNumber: number } | null>(null)
+  const displayPostsRef = useRef<Post[]>([])
+  const sessionRef = useRef(session)
+  sessionRef.current = session
+
+  const reportReadProgress = (pos: { postId: number; postNumber: number }, keepalive = false) => {
+    const curSession = sessionRef.current
+    if (!id || !pos.postId || !curSession?.user || curSession.readOnly) return
+    if (pos.postId === lastReportedPostIdRef.current) return
+
+    lastReportedPostIdRef.current = pos.postId
+    const now = Date.now()
+    lastSyncTsRef.current = now
+    const nowIso = new Date(now).toISOString()
+
+    qc.setQueryData<DiscussionDetail>(["discussion", id], (old) =>
+      old
+        ? {
+            ...old,
+            readProgress: {
+              postId: pos.postId,
+              postNumber: pos.postNumber,
+              updatedAt: nowIso,
+            },
+          }
+        : old,
+    )
+
+    void api<{ postId: number; postNumber: number; updatedAt: string }>(`/api/discussions/${id}/read-progress`, {
+      json: { postId: pos.postId, postNumber: pos.postNumber },
+      keepalive,
+    })
+      .then((res) => {
+        if (res?.updatedAt) {
+          lastSyncTsRef.current = Math.max(lastSyncTsRef.current, Date.parse(res.updatedAt) || 0)
+        }
+      })
+      .catch(() => {
+        if (lastReportedPostIdRef.current === pos.postId) {
+          lastReportedPostIdRef.current = null
+        }
+      })
+  }
+
+  // 2. 监听用户滚动，按账户同步当前帖子的阅读楼层进度（含切后台/离开页面保底上报）
   useEffect(() => {
     if (!data || !data.posts || data.posts.length === 0) return
     const scroller = document.getElementById("forum-content") || document.documentElement
     let timer: ReturnType<typeof setTimeout> | null = null
-    const storageKey = `bbs_disc_read_pos_${id}`
+
+    const markUserInteracted = () => {
+      if (!initialRestoredRef.current) {
+        userInteractedRef.current = true
+      }
+    }
+
+    const flushPending = () => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      if (pendingPosRef.current) {
+        const pos = pendingPosRef.current
+        pendingPosRef.current = null
+        reportReadProgress(pos, true)
+      }
+    }
 
     const handleScroll = () => {
+      if (!initialRestoredRef.current || Date.now() < suppressScrollReportUntilRef.current) {
+        return
+      }
+      const pos = detectVisiblePost(displayPostsRef.current, scroller)
+      if (!pos) return
+      pendingPosRef.current = pos
       if (timer) clearTimeout(timer)
       timer = setTimeout(() => {
-        const top = scroller.scrollTop
-        let visiblePostId: number | undefined
-        let visiblePostNumber: number | undefined
-
-        // 计算当前视口中最靠顶部的帖子楼层
-        for (const p of data.posts) {
-          const el = document.getElementById(`post-${p.id}`)
-          if (el) {
-            const rect = el.getBoundingClientRect()
-            if (rect.bottom > 80) {
-              visiblePostId = p.id
-              visiblePostNumber = p.number
-              break
-            }
-          }
+        timer = null
+        if (pendingPosRef.current) {
+          const next = pendingPosRef.current
+          pendingPosRef.current = null
+          reportReadProgress(next)
         }
+      }, 600)
+    }
 
-        try {
-          localStorage.setItem(
-            storageKey,
-            JSON.stringify({
-              scrollTop: top,
-              postId: visiblePostId,
-              postNumber: visiblePostNumber,
-              updatedAt: Date.now(),
-            }),
-          )
-        } catch {
-          // ignore storage error
-        }
-      }, 150)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushPending()
+      }
     }
 
     scroller.addEventListener("scroll", handleScroll, { passive: true })
-    return () => {
-      if (timer) clearTimeout(timer)
-      scroller.removeEventListener("scroll", handleScroll)
-    }
-  }, [data, id])
+    scroller.addEventListener("wheel", markUserInteracted, { passive: true })
+    scroller.addEventListener("touchmove", markUserInteracted, { passive: true })
+    document.addEventListener("visibilitychange", onVisibilityChange)
+    window.addEventListener("pagehide", flushPending)
 
-  // 3. 打开讨论定位：第一次进入周报直达最底部最新楼层；后续再次进入恢复到之前看到的楼层
+    return () => {
+      flushPending()
+      scroller.removeEventListener("scroll", handleScroll)
+      scroller.removeEventListener("wheel", markUserInteracted)
+      scroller.removeEventListener("touchmove", markUserInteracted)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+      window.removeEventListener("pagehide", flushPending)
+    }
+  }, [data?.discussion.id, id])
+
+  // 3. 打开讨论或切回页面时按账户阅读进度定位：
+  //    优先 URL #post-xxx 锚点；其次账户服务端 readProgress；周报首次打开直达最新底部楼层并上报。
   useEffect(() => {
-    if (!data || !data.posts || data.posts.length === 0) return
+    if (!data || isFetching || !data.posts || data.posts.length === 0) return
 
     const isWeekly = Boolean(
       data.isWeekly ||
@@ -125,54 +215,75 @@ function DiscussionView({
     )
 
     const scroller = document.getElementById("forum-content") || document.documentElement
-    const storageKey = `bbs_disc_read_pos_${id}`
-    const storedStr = localStorage.getItem(storageKey)
+
+    const findTargetEl = (rp?: { postId?: number; postNumber?: number } | null): HTMLElement | null => {
+      if (!rp) return null
+      if (rp.postId) {
+        const el = document.getElementById(`post-${rp.postId}`)
+        if (el) return el
+      }
+      if (rp.postNumber) {
+        const matched = data.posts.find((p) => p.number === rp.postNumber)
+        if (matched) return document.getElementById(`post-${matched.id}`)
+      }
+      return null
+    }
+
+    // 已经完成初始恢复后，若其他设备更新了更晚的阅读进度，切回时同步定位过去
+    if (initialRestoredRef.current) {
+      const rp = data.readProgress
+      if (rp && rp.postId) {
+        const serverTs = rp.updatedAt ? Date.parse(rp.updatedAt) : 0
+        if (serverTs > lastSyncTsRef.current && rp.postId !== lastReportedPostIdRef.current) {
+          const targetEl = findTargetEl(rp)
+          if (targetEl) {
+            suppressScrollReportUntilRef.current = Date.now() + 400
+            targetEl.scrollIntoView({ behavior: "instant", block: "start" })
+            lastReportedPostIdRef.current = rp.postId
+            lastSyncTsRef.current = serverTs
+          }
+        }
+      }
+      return
+    }
+
+    initialRestoredRef.current = true
+    if (userInteractedRef.current) return
 
     const doScroll = () => {
-      // 1. 如果已有阅读记录（非第一次打开），精准恢复到之前看到的楼层
-      if (storedStr) {
-        try {
-          const parsed = JSON.parse(storedStr)
-          if (parsed.postId) {
-            const targetEl = document.getElementById(`post-${parsed.postId}`)
-            if (targetEl) {
-              targetEl.scrollIntoView({ behavior: "instant", block: "start" })
-              return
-            }
-          }
-          if (typeof parsed.scrollTop === "number" && parsed.scrollTop > 0) {
-            scroller.scrollTo({ top: parsed.scrollTop, behavior: "instant" })
-            return
-          }
-        } catch {
-          // ignore json error
+      if (userInteractedRef.current) return
+
+      const hashMatch = window.location.hash.match(/^#post-(\d+)$/)
+      if (hashMatch) {
+        const hashEl = document.getElementById(`post-${hashMatch[1]}`)
+        if (hashEl) {
+          suppressScrollReportUntilRef.current = Date.now() + 400
+          hashEl.scrollIntoView({ behavior: "instant", block: "start" })
+          return
         }
       }
 
-      // 2. 第一次打开周报：直达最底部最新周报楼层
+      const rp = data.readProgress
+      const targetEl = findTargetEl(rp)
+      if (rp && targetEl) {
+        suppressScrollReportUntilRef.current = Date.now() + 400
+        targetEl.scrollIntoView({ behavior: "instant", block: "start" })
+        lastReportedPostIdRef.current = rp.postId
+        lastSyncTsRef.current = rp.updatedAt ? Date.parse(rp.updatedAt) : Date.now()
+        return
+      }
+
       if (isWeekly) {
         const last = data.posts[data.posts.length - 1]
         const lastEl = last ? document.getElementById(`post-${last.id}`) : null
+        suppressScrollReportUntilRef.current = Date.now() + 400
         if (lastEl) {
           lastEl.scrollIntoView({ behavior: "instant", block: "end" })
         } else {
           scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" })
         }
-        // 标记已阅读过最新周报，后续再次进入将保持阅读进度
         if (last) {
-          try {
-            localStorage.setItem(
-              storageKey,
-              JSON.stringify({
-                scrollTop: scroller.scrollTop,
-                postId: last.id,
-                postNumber: last.number,
-                updatedAt: Date.now(),
-              }),
-            )
-          } catch {
-            // ignore
-          }
+          reportReadProgress({ postId: last.id, postNumber: last.number })
         }
       }
     }
@@ -193,7 +304,7 @@ function DiscussionView({
       clearTimeout(t1)
       clearTimeout(t2)
     }
-  }, [data?.discussion.id, id])
+  }, [data, isFetching, id])
 
   // 旧链接 /d/{id} 规范化为 /d/{id}-{slug}（仅整页路由）
   useEffect(() => {
@@ -360,9 +471,12 @@ function DiscussionView({
         // ignore
       }
       setReplyContent("")
+      lastReportedPostIdRef.current = r.postId
+      lastSyncTsRef.current = Date.now()
       void qc.invalidateQueries({ queryKey: ["discussion", id] })
       void qc.invalidateQueries({ queryKey: ["me"] })
       setTimeout(() => {
+        suppressScrollReportUntilRef.current = Date.now() + 400
         document.getElementById(`post-${r.postId}`)?.scrollIntoView({ behavior: "smooth" })
       }, 300)
     },
@@ -413,7 +527,6 @@ function DiscussionView({
     }, 100)
   }
 
-  const { data: session } = useSession()
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [titleInput, setTitleInput] = useState("")
 
@@ -432,6 +545,12 @@ function DiscussionView({
 
   // 当讨论切换时重置状态
   useEffect(() => {
+    initialRestoredRef.current = false
+    userInteractedRef.current = false
+    suppressScrollReportUntilRef.current = 0
+    lastSyncTsRef.current = 0
+    lastReportedPostIdRef.current = null
+    pendingPosRef.current = null
     setIsFromStart(false)
     setStartPosts([])
     setStartPage(1)
@@ -657,6 +776,7 @@ function DiscussionView({
   )
 
   const displayPosts = isFromStart ? startPosts : (recentPosts.length > 0 ? recentPosts : (data.posts || []))
+  displayPostsRef.current = displayPosts
   const firstPostNumber = displayPosts[0]?.number
   const hasOlderPosts = Boolean(
     isWeeklyDiscussion && !isFromStart && firstPostNumber && firstPostNumber > 1 && !hasLoadedAllOlder
@@ -1145,7 +1265,7 @@ function PostItem({
       data-post-id={p.id}
       data-post-number={p.number}
       data-post-author={p.author?.username ?? ""}
-      className={`border-b border-border/50 px-1 py-5 last:border-b-0 ${p.hidden ? "opacity-60" : ""}`}
+      className={`scroll-mt-24 border-b border-border/50 px-1 py-5 last:border-b-0 ${p.hidden ? "opacity-60" : ""}`}
     >
       <header className="mb-2 flex items-center gap-2.5">
         <Link to={`/u/${p.author?.username ?? ""}`}>

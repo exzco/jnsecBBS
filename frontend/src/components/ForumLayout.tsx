@@ -57,7 +57,6 @@ function WeeklyDiscussionsList({
 }) {
   const qc = useQueryClient()
   const [filter, setFilter] = useState("")
-  const [readIds, setReadIds] = useState<Set<number>>(() => new Set())
 
   const { data, isLoading } = useQuery({
     queryKey: ["weekly-discussions-all", tagSlug],
@@ -65,7 +64,8 @@ function WeeklyDiscussionsList({
       api<{ items: WeeklyDiscussionItem[] }>(
         `/api/tags/${encodeURIComponent(tagSlug)}/discussions?all=1`,
       ),
-    staleTime: 60_000,
+    staleTime: 10_000,
+    refetchOnWindowFocus: true,
   })
 
   if (isLoading) {
@@ -103,13 +103,12 @@ function WeeklyDiscussionsList({
         ) : (
           filtered.map((item) => {
             const isActive = currentDiscussionId === item.id
-            const isUnread = Boolean(item.hasUnread && !isActive && !readIds.has(item.id))
+            const isUnread = Boolean(item.hasUnread && !isActive)
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => {
-                  setReadIds((prev) => new Set(prev).add(item.id))
                   markDiscussionAsReadInCache(qc, item.id)
                   openDiscussion(item.id)
                 }}
@@ -156,6 +155,7 @@ export function ForumLayout() {
     queryKey: ["home"],
     queryFn: () => api<{ cards: HomeCard[] }>("/api/home"),
     enabled: !!user,
+    refetchOnWindowFocus: true,
   })
 
   const cards = homeData?.cards ?? []
@@ -238,6 +238,7 @@ export function ForumLayout() {
     queryKey: ["recent", "sidebar"],
     queryFn: () => api<RecentData>("/api/recent?page=1&sidebar=1"),
     enabled: !!user,
+    refetchOnWindowFocus: true,
   })
 
   // 未登录欢迎横幅

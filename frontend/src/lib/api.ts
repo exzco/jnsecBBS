@@ -16,6 +16,7 @@ interface Options {
   method?: "GET" | "POST"
   json?: unknown
   form?: FormData
+  keepalive?: boolean
 }
 
 export async function api<T = unknown>(path: string, opts: Options = {}): Promise<T> {
@@ -28,6 +29,7 @@ export async function api<T = unknown>(path: string, opts: Options = {}): Promis
     method,
     headers,
     credentials: "same-origin",
+    keepalive: opts.keepalive,
     body: opts.json !== undefined ? JSON.stringify(opts.json) : opts.form,
   })
   const data = await res.json().catch(() => ({}))

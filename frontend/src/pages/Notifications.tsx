@@ -17,6 +17,7 @@ export default function NotificationsPage() {
   const { data } = useQuery({
     queryKey: ["notifications"],
     queryFn: () => api<{ items: NotificationItem[]; unread: number }>("/api/me/notifications"),
+    refetchOnWindowFocus: true,
   })
 
   const readAll = useMutation({

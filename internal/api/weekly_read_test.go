@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -429,5 +430,263 @@ func TestWeeklyDiscussionFallback60Days(t *testing.T) {
 	}
 	if len(res.Posts) != 3 {
 		t.Fatalf("expected 3 posts from 60 days range, got %d", len(res.Posts))
+	}
+}
+
+func TestReadProgressAccountSyncAndIsolation(t *testing.T) {
+	g, userA, routerA := profileTestServer(t)
+
+	// Create second user (User B) on the same DB
+	userB := &models.User{Username: "second-user", Email: "second@example.org"}
+	if err := g.Create(userB).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Ensure default tag allows viewing & posting
+	var tag models.Tag
+	if err := g.First(&tag).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	disc := models.Discussion{
+		Title:        "跨端阅读进度同步测试",
+		SlugCol:      "cross-device-read-progress",
+		UserID:       &userA.ID,
+		IsApproved:   true,
+		CommentCount: 12,
+		Tags:         []models.Tag{tag},
+	}
+	lastNum := 12
+	disc.LastPostNumber = &lastNum
+	if err := g.Create(&disc).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	posts := make([]models.Post, 0, 12)
+	for i := 1; i <= 12; i++ {
+		num := i
+		p := models.Post{
+			DiscussionID: disc.ID,
+			Number:       &num,
+			UserID:       &userA.ID,
+			Type:         "comment",
+			Content:      fmt.Sprintf("第 %d 楼", i),
+			IsApproved:   true,
+			CreatedAt:    time.Now().Add(time.Duration(i) * time.Minute),
+		}
+		if err := g.Create(&p).Error; err != nil {
+			t.Fatal(err)
+		}
+		posts = append(posts, p)
+	}
+
+	// 1. User A 首次打开：无 readProgress
+	w := httptest.NewRecorder()
+	routerA.ServeHTTP(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d?all=1", disc.ID), nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var detail1 struct {
+		ReadProgress *struct {
+			PostID     uint `json:"postId"`
+			PostNumber int  `json:"postNumber"`
+		} `json:"readProgress"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &detail1); err != nil {
+		t.Fatal(err)
+	}
+	if detail1.ReadProgress != nil {
+		t.Fatalf("expected nil readProgress on first open, got %+v", detail1.ReadProgress)
+	}
+
+	// 2. User A 在手机端阅读到第 7 楼并上报
+	wSave := httptest.NewRecorder()
+	reqSave := httptest.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("/api/discussions/%d/read-progress", disc.ID),
+		strings.NewReader(fmt.Sprintf(`{"postId":%d,"postNumber":7}`, posts[6].ID)),
+	)
+	reqSave.Header.Set("Content-Type", "application/json")
+	routerA.ServeHTTP(wSave, reqSave)
+	if wSave.Code != http.StatusOK {
+		t.Fatalf("expected 200 saving progress, got %d: %s", wSave.Code, wSave.Body.String())
+	}
+
+	// 3. User A 换到电脑端重新打开：服务端返回第 7 楼
+	w2 := httptest.NewRecorder()
+	routerA.ServeHTTP(w2, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d?all=1", disc.ID), nil))
+	var detail2 struct {
+		ReadProgress *struct {
+			PostID     uint `json:"postId"`
+			PostNumber int  `json:"postNumber"`
+		} `json:"readProgress"`
+	}
+	if err := json.Unmarshal(w2.Body.Bytes(), &detail2); err != nil {
+		t.Fatal(err)
+	}
+	if detail2.ReadProgress == nil || detail2.ReadProgress.PostID != posts[6].ID || detail2.ReadProgress.PostNumber != 7 {
+		t.Fatalf("expected readProgress at post #7 (id=%d), got %+v", posts[6].ID, detail2.ReadProgress)
+	}
+
+	// 4. User A 往回翻到第 3 楼：允许更新为第 3 楼，且列表依然保持已读（不重亮蓝点）
+	wBack := httptest.NewRecorder()
+	reqBack := httptest.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("/api/discussions/%d/read-progress", disc.ID),
+		strings.NewReader(fmt.Sprintf(`{"postId":%d,"postNumber":3}`, posts[2].ID)),
+	)
+	reqBack.Header.Set("Content-Type", "application/json")
+	routerA.ServeHTTP(wBack, reqBack)
+	if wBack.Code != http.StatusOK {
+		t.Fatalf("expected 200 updating backward progress, got %d: %s", wBack.Code, wBack.Body.String())
+	}
+
+	wRecent := httptest.NewRecorder()
+	routerA.ServeHTTP(wRecent, httptest.NewRequest(http.MethodGet, "/api/recent", nil))
+	var recent struct {
+		Items []struct {
+			ID        uint `json:"id"`
+			HasUnread bool `json:"hasUnread"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(wRecent.Body.Bytes(), &recent); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range recent.Items {
+		if it.ID == disc.ID && it.HasUnread {
+			t.Fatalf("expected discussion %d to remain read after backward scroll", disc.ID)
+		}
+	}
+
+	// 5. User B（另一账号）打开同一帖子：readProgress 为 nil 且列表为未读
+	var posCountB int64
+	g.Model(&models.DiscussionReadPosition{}).Where("user_id = ? AND discussion_id = ?", userB.ID, disc.ID).Count(&posCountB)
+	if posCountB != 0 {
+		t.Fatalf("expected no read position for userB, got %d", posCountB)
+	}
+
+	// 6. User A 回帖后，进度自动推进到新回复楼层
+	wReply := httptest.NewRecorder()
+	reqReply := httptest.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("/api/discussions/%d/reply", disc.ID),
+		strings.NewReader(`{"content":"最新回复"}`),
+	)
+	reqReply.Header.Set("Content-Type", "application/json")
+	routerA.ServeHTTP(wReply, reqReply)
+	if wReply.Code != http.StatusOK {
+		t.Fatalf("expected 200 on reply, got %d: %s", wReply.Code, wReply.Body.String())
+	}
+	var replyRes struct {
+		PostID uint `json:"postId"`
+		Number int  `json:"number"`
+	}
+	if err := json.Unmarshal(wReply.Body.Bytes(), &replyRes); err != nil {
+		t.Fatal(err)
+	}
+
+	w3 := httptest.NewRecorder()
+	routerA.ServeHTTP(w3, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d?all=1", disc.ID), nil))
+	var detail3 struct {
+		ReadProgress *struct {
+			PostID     uint `json:"postId"`
+			PostNumber int  `json:"postNumber"`
+		} `json:"readProgress"`
+	}
+	if err := json.Unmarshal(w3.Body.Bytes(), &detail3); err != nil {
+		t.Fatal(err)
+	}
+	if detail3.ReadProgress == nil || detail3.ReadProgress.PostID != replyRes.PostID || detail3.ReadProgress.PostNumber != replyRes.Number {
+		t.Fatalf("expected readProgress to advance to new reply (%d, #%d), got %+v", replyRes.PostID, replyRes.Number, detail3.ReadProgress)
+	}
+}
+
+func TestWeeklyDiscussionIncludesSavedOlderReadProgress(t *testing.T) {
+	g, user, router := profileTestServer(t)
+
+	weeklyTag := models.Tag{Name: "周报", Slug: "weekly"}
+	if err := g.Create(&weeklyTag).Error; err != nil {
+		t.Fatal(err)
+	}
+	disc := models.Discussion{
+		Title:        "跨窗阅读周报测试",
+		SlugCol:      "weekly-cross-window",
+		UserID:       &user.ID,
+		IsApproved:   true,
+		CommentCount: 15,
+		Tags:         []models.Tag{weeklyTag},
+	}
+	lastNum := 15
+	disc.LastPostNumber = &lastNum
+	if err := g.Create(&disc).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	var floor7 models.Post
+	for i := 1; i <= 15; i++ {
+		num := i
+		createdAt := now.AddDate(0, 0, -5).Add(time.Duration(i) * time.Hour)
+		if i <= 10 {
+			createdAt = now.AddDate(0, 0, -45).Add(time.Duration(i) * time.Hour)
+		}
+		p := models.Post{
+			DiscussionID: disc.ID,
+			Number:       &num,
+			UserID:       &user.ID,
+			Type:         "comment",
+			Content:      fmt.Sprintf("周报第 %d 楼", i),
+			IsApproved:   true,
+			CreatedAt:    createdAt,
+		}
+		if err := g.Create(&p).Error; err != nil {
+			t.Fatal(err)
+		}
+		if i == 7 {
+			floor7 = p
+		}
+	}
+
+	// 保存用户停在 45 天前的第 7 楼
+	wSave := httptest.NewRecorder()
+	reqSave := httptest.NewRequest(
+		http.MethodPost,
+		fmt.Sprintf("/api/discussions/%d/read-progress", disc.ID),
+		strings.NewReader(fmt.Sprintf(`{"postId":%d,"postNumber":7}`, floor7.ID)),
+	)
+	reqSave.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(wSave, reqSave)
+	if wSave.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wSave.Code, wSave.Body.String())
+	}
+
+	// 另一端打开该周报时，返回列表中应包含第 7 楼以便直接定位
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d?all=1", disc.ID), nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var res struct {
+		Posts []struct {
+			Number int `json:"number"`
+		} `json:"posts"`
+		ReadProgress *struct {
+			PostNumber int `json:"postNumber"`
+		} `json:"readProgress"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.ReadProgress == nil || res.ReadProgress.PostNumber != 7 {
+		t.Fatalf("expected readProgress=7, got %+v", res.ReadProgress)
+	}
+	foundFloor7 := false
+	for _, p := range res.Posts {
+		if p.Number == 7 {
+			foundFloor7 = true
+			break
+		}
+	}
+	if !foundFloor7 {
+		t.Fatalf("expected floor 7 to be included in weekly response, got posts=%+v", res.Posts)
 	}
 }

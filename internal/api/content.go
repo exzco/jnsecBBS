@@ -72,6 +72,21 @@ func (s *Server) discussionDetail(c echo.Context) (any, *service.Error) {
 	})
 }
 
+func (s *Server) saveReadProgress(c echo.Context) (any, *service.Error) {
+	id, _ := parseUint(c.Param("id"))
+	if id == 0 {
+		return nil, service.Err(http.StatusNotFound, "该帖子不存在。")
+	}
+	body, err := bindJSON[struct {
+		PostID     uint `json:"postId"`
+		PostNumber int  `json:"postNumber"`
+	}](c)
+	if err != nil {
+		return nil, err
+	}
+	return s.svc.SaveReadPosition(s.currentUser(c), id, body.PostID, body.PostNumber)
+}
+
 func (s *Server) createDiscussion(c echo.Context) (any, *service.Error) {
 	body, err := bindJSON[struct {
 		Title   string `json:"title"`

@@ -95,6 +95,7 @@ func (s *Server) Register(e *echo.Echo) {
 	d.GET("/:id", s.ha(s.discussionDetail))
 	d.POST("", s.ha(s.createDiscussion), s.limitWith(postLimiter))
 	d.POST("/:id/reply", s.ha(s.reply), s.limitWith(postLimiter))
+	d.POST("/:id/read-progress", s.ha(s.saveReadProgress))
 	d.POST("/:id/mod", s.ha(s.moderate))
 	p := pub.Group("/posts")
 	p.GET("/:id/edit", s.ha(s.postEditGet))

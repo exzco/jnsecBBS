@@ -16,12 +16,13 @@ export function useSession() {
   })
 }
 
-// 未读通知数：已登录时每分钟轮询
+// 未读通知数：已登录时每分钟轮询，切回窗口时同步刷新
 export function useUnread(enabled: boolean) {
   return useQuery({
     queryKey: ["unread"],
     enabled,
     refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
     queryFn: async () => {
       const data = await api<{ user: User | null; unread?: number }>("/api/me")
       return data.unread ?? 0

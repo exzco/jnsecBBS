@@ -60,17 +60,25 @@ type DetailQuery struct {
 	ViewerIP     string // 浏览量去重用
 }
 
+// ReadProgressDTO 账户级帖子阅读楼层进度。
+type ReadProgressDTO struct {
+	PostID     uint      `json:"postId"`
+	PostNumber int       `json:"postNumber"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
 // DetailData 讨论详情响应数据。
 type DetailData struct {
-	Discussion DiscussionSummaryDTO  `json:"discussion"`
-	Posts      []PostDTO             `json:"posts"`
-	Page       PageDTO               `json:"page"`
-	CanReply   bool                  `json:"canReply"`
-	IsMod      bool                  `json:"isMod"`
-	EditorTags []TagDTO              `json:"editorTags"`
-	Viewers    []DiscussionViewerDTO `json:"viewers"`
-	IsWeekly   bool                  `json:"isWeekly"`
-	WindowDays int                   `json:"windowDays"`
+	Discussion   DiscussionSummaryDTO  `json:"discussion"`
+	Posts        []PostDTO             `json:"posts"`
+	Page         PageDTO               `json:"page"`
+	CanReply     bool                  `json:"canReply"`
+	IsMod        bool                  `json:"isMod"`
+	EditorTags   []TagDTO              `json:"editorTags"`
+	Viewers      []DiscussionViewerDTO `json:"viewers"`
+	IsWeekly     bool                  `json:"isWeekly"`
+	WindowDays   int                   `json:"windowDays"`
+	ReadProgress *ReadProgressDTO      `json:"readProgress,omitempty"`
 }
 
 // saveReadProgress 单调推进用户在讨论中的已读楼层并刷新已读时间（g 可为事务句柄）。
@@ -93,6 +101,78 @@ func saveReadProgress(g *gorm.DB, userID, discussionID uint, number int) error {
 	return g.Save(&du).Error
 }
 
+func loadReadPosition(g *gorm.DB, userID, discussionID uint) *ReadProgressDTO {
+	var pos models.DiscussionReadPosition
+	if err := g.Where("user_id = ? AND discussion_id = ?", userID, discussionID).First(&pos).Error; err != nil {
+		return nil
+	}
+	if pos.PostID == 0 && pos.PostNumber == 0 {
+		return nil
+	}
+	return &ReadProgressDTO{
+		PostID:     pos.PostID,
+		PostNumber: pos.PostNumber,
+		UpdatedAt:  pos.UpdatedAt,
+	}
+}
+
+func saveReadPosition(g *gorm.DB, userID, discussionID, postID uint, postNumber int) (time.Time, error) {
+	now := time.Now()
+	if postNumber <= 0 && postID == 0 {
+		return now, nil
+	}
+	pos := models.DiscussionReadPosition{
+		UserID:       userID,
+		DiscussionID: discussionID,
+		PostID:       postID,
+		PostNumber:   postNumber,
+		UpdatedAt:    now,
+	}
+	err := g.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "discussion_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"post_id", "post_number", "updated_at"}),
+	}).Create(&pos).Error
+	return now, err
+}
+
+// SaveReadPosition 按账户保存用户在某讨论当前阅读停留的楼层。
+func (s *Service) SaveReadPosition(u *models.User, discussionID, postID uint, postNumber int) (ReadProgressDTO, *Error) {
+	d, err := s.loadDiscussion(u, discussionID)
+	if err != nil {
+		return ReadProgressDTO{}, err
+	}
+	var post models.Post
+	q := visibleComments(s.db, u, d.ID)
+	switch {
+	case postID > 0:
+		q = q.Where("id = ?", postID)
+	case postNumber > 0:
+		q = q.Where("number = ?", postNumber)
+	default:
+		return ReadProgressDTO{}, Err(http.StatusBadRequest, "缺少有效的楼层标识。")
+	}
+	if err := q.First(&post).Error; err != nil {
+		return ReadProgressDTO{}, Err(http.StatusNotFound, "该楼层不存在或不可见。")
+	}
+	num := post.PostNumber()
+	var savedAt time.Time
+	if txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		savedAt, err = saveReadPosition(tx, u.ID, d.ID, post.ID, num)
+		if err != nil {
+			return err
+		}
+		if num > 0 {
+			return saveReadProgress(tx, u.ID, d.ID, num)
+		}
+		return nil
+	}); txErr != nil {
+		log.Printf("[service] saveReadPosition 失败 discussion=%d user=%d: %v", d.ID, u.ID, txErr)
+		return ReadProgressDTO{}, Err(http.StatusInternalServerError, "保存阅读进度失败，请重试。")
+	}
+	return ReadProgressDTO{PostID: post.ID, PostNumber: num, UpdatedAt: savedAt}, nil
+}
+
 // visibleComments 某讨论下对 u 可见的评论流（排除系统事件/待审/私密帖，隐藏楼层仅版主可见）。
 func visibleComments(g *gorm.DB, u *models.User, discussionID uint) *gorm.DB {
 	q := g.Model(&models.Post{}).Where("discussion_id = ? AND type = ? AND is_approved = ? AND is_private = ?", discussionID, "comment", true, false)
@@ -113,6 +193,7 @@ func (s *Service) DiscussionDetail(u *models.User, id uint, q DetailQuery) (Deta
 	if err := s.db.Where("user_id = ? AND discussion_id = ?", u.ID, d.ID).First(&du).Error; err == nil {
 		hasRead = true
 	}
+	readProgress := loadReadPosition(s.db, u.ID, d.ID)
 	isWeekly := false
 	for _, t := range d.Tags {
 		if strings.Contains(t.Name, "周报") || t.Slug == "weekly" {
@@ -176,9 +257,18 @@ func (s *Service) DiscussionDetail(u *models.User, id uint, q DetailQuery) (Deta
 					days = (diffDays/30 + 1) * 30
 				}
 				var posts []models.Post
-				postQuery.Session(&gorm.Session{}).
-					Where("created_at >= ?", now.AddDate(0, 0, -days)).
-					Order("number ASC").
+				cond := postQuery.Session(&gorm.Session{})
+				lastPostNum := int(totalComments)
+				if d.LastPostNumber != nil && *d.LastPostNumber > 0 {
+					lastPostNum = *d.LastPostNumber
+				}
+				if readProgress != nil && readProgress.PostNumber > 0 && lastPostNum-readProgress.PostNumber <= 150 {
+					startNum := max(1, readProgress.PostNumber-2)
+					cond = cond.Where("created_at >= ? OR number >= ?", now.AddDate(0, 0, -days), startNum)
+				} else {
+					cond = cond.Where("created_at >= ?", now.AddDate(0, 0, -days))
+				}
+				cond.Order("number ASC").
 					Preload("User").
 					Find(&posts)
 				return posts, 1, 1, days
@@ -319,15 +409,16 @@ func (s *Service) DiscussionDetail(u *models.User, id uint, q DetailQuery) (Deta
 	summary := s.DiscussionSummary(d, u)
 	summary.HasUnread = false
 	return DetailData{
-		Discussion: summary,
-		Posts:      views,
-		Page:       PageDTO{Page: page, Pages: pages, Total: int(totalComments)},
-		CanReply:   canReply,
-		IsMod:      isMod && !s.cfg.ReadOnly,
-		EditorTags: editorTags,
-		Viewers:    s.loadDiscussionViewers(d.ID),
-		IsWeekly:   isWeekly,
-		WindowDays: windowDays,
+		Discussion:   summary,
+		Posts:        views,
+		Page:         PageDTO{Page: page, Pages: pages, Total: int(totalComments)},
+		CanReply:     canReply,
+		IsMod:        isMod && !s.cfg.ReadOnly,
+		EditorTags:   editorTags,
+		Viewers:      s.loadDiscussionViewers(d.ID),
+		IsWeekly:     isWeekly,
+		WindowDays:   windowDays,
+		ReadProgress: readProgress,
 	}, nil
 }
 
@@ -397,6 +488,12 @@ func (s *Service) CreateDiscussion(u *models.User, title, content string, tagIDs
 		}
 		if err := tx.Model(&models.User{}).Where("id = ?", u.ID).
 			UpdateColumn("discussion_count", gorm.Expr("discussion_count + 1")).Error; err != nil {
+			return err
+		}
+		if err := saveReadProgress(tx, u.ID, d.ID, 1); err != nil {
+			return err
+		}
+		if _, err := saveReadPosition(tx, u.ID, d.ID, post.ID, 1); err != nil {
 			return err
 		}
 		// 同步版块冗余计数（PHP 端语义）
@@ -498,6 +595,9 @@ func (s *Service) Reply(u *models.User, discussionID uint, content string) (Repl
 		}
 		// 已读楼层推进在事务内落盘，失败随事务回滚。
 		if err := saveReadProgress(tx, u.ID, d.ID, nextNumber); err != nil {
+			return err
+		}
+		if _, err := saveReadPosition(tx, u.ID, d.ID, post.ID, nextNumber); err != nil {
 			return err
 		}
 		// 同步版块冗余计数

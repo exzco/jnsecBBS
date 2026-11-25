@@ -41,6 +41,7 @@ export default function HomePage() {
     queryKey: ["home"],
     queryFn: () => api<{ cards: HomeCard[] }>("/api/home"),
     enabled: !!user,
+    refetchOnWindowFocus: true,
   })
 
   const cards = homeData?.cards ?? []
@@ -148,6 +149,7 @@ export default function HomePage() {
     getNextPageParam: (last) =>
       last.page.page < last.page.pages ? last.page.page + 1 : undefined,
     enabled: !!user && !isAll,
+    refetchOnWindowFocus: true,
   })
 
   // 拖动/滚动到页面约 90% 位置时自动触发 callback 加载更多讨论

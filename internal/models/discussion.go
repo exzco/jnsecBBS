@@ -120,6 +120,17 @@ type DiscussionUser struct {
 
 func (DiscussionUser) TableName() string { return "flarum_discussion_user" }
 
+// DiscussionReadPosition 记录用户在讨论中实际阅读停留的楼层进度（按账户跨端同步）。
+type DiscussionReadPosition struct {
+	UserID       uint      `gorm:"column:user_id;primaryKey"`
+	DiscussionID uint      `gorm:"column:discussion_id;primaryKey"`
+	PostID       uint      `gorm:"column:post_id"`
+	PostNumber   int       `gorm:"column:post_number"`
+	UpdatedAt    time.Time `gorm:"column:updated_at"`
+}
+
+func (DiscussionReadPosition) TableName() string { return "bbs_discussion_read_positions" }
+
 // DiscussionView 记录讨论帖子的访问与浏览历史（兼容 Flarum 原生 flarum_discussion_views 表）。
 type DiscussionView struct {
 	ID           uint      `gorm:"column:id;primaryKey;autoIncrement"`

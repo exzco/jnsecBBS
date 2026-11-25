@@ -26,6 +26,7 @@ var migrations = []migration{
 	{2, "go_user_profiles", createUserProfiles},
 	{3, "go_email_outbox", createEmailOutbox},
 	{4, "go_email_bind", createEmailBind},
+	{5, "go_discussion_read_positions", createDiscussionReadPositions},
 }
 
 // Migrate explicitly upgrades Go-owned tables in an existing Flarum mirror.
@@ -207,4 +208,22 @@ func createEmailBind(g *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+// createDiscussionReadPositions 建帖子阅读楼层进度表（按账户跨端同步“读到哪一楼”）。
+func createDiscussionReadPositions(g *gorm.DB) error {
+	idType, numType, suffix := "integer", "integer", ""
+	if g.Dialector.Name() == "mysql" {
+		idType = "int unsigned"
+		numType = "int unsigned"
+		suffix = " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+	}
+	return g.Exec(`CREATE TABLE IF NOT EXISTS bbs_discussion_read_positions (
+		user_id ` + idType + ` NOT NULL,
+		discussion_id ` + idType + ` NOT NULL,
+		post_id ` + idType + ` NOT NULL DEFAULT 0,
+		post_number ` + numType + ` NOT NULL DEFAULT 0,
+		updated_at datetime NOT NULL,
+		PRIMARY KEY (user_id, discussion_id)
+	)` + suffix).Error
 }
