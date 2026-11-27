@@ -28,7 +28,7 @@ Go + React BBS 服务，与现有 Flarum MySQL 数据库共享运行。
 
 ```
 jnsecBBS/
-├── cmd/bbs/               # 命令行总入口 (serve, init-db, seed-admin, audit-content)
+├── cmd/                   # 服务启动入口 (serve)
 ├── internal/
 │   ├── api/               # RESTful API 路由分发、业务控制器与只读拦截器
 │   ├── auth/              # 鉴权引擎 (RBAC 角色组、Session 会话、密码校验)
@@ -40,11 +40,21 @@ jnsecBBS/
 │   ├── models/            # 数据模型定义 (兼容原 Flarum 表结构及扩展表)
 │   ├── web/               # Web 服务装配 (Gin 引擎、CSRF 中间件、SPA Fallback、头像生成)
 ├── frontend/              # React 19 SPA 前端工程 (源码、组件、状态与页面)
-├── deploy/                # 部署配置 (Nginx 配置模板、Systemd 单元、SQL 迁移脚本)
-├── scripts/               # 核心同步工具 (sync-flarum.py 及其实际环境自动化测试)
+├── deploy/                # 部署配置 (Nginx 配置模板)
+├── config.yaml            # 唯一应用配置，凭据由 JNSEC_* 环境变量注入
+├── gar/                   # 已停用的同步、迁移和审计工具及配套文件 (仅本地保留，Git 忽略)
 ├── Dockerfile             # 多阶段构建文件 (Node/npm 构建前端 -> Go 编译静态二进制 -> Alpine 运行)
 └── docker-compose.yaml    # 生产容器编排文件
 ```
+
+容器启动时执行 `bbs serve`，连接现有数据库并检查表结构。数据库结构变更由运维单独管理，部署脚本不再执行迁移。
+旧的初始化、迁移和审计命令已移除，相关工具及一次性 SQL 保留在 `gar/`。
+
+应用配置统一使用 `config.yaml`，镜像内路径为 `/app/config.yaml`。
+配置优先级为 `JNSEC_*` 环境变量 > YAML > 程序默认值。
+生产环境使用 MySQL 的 `flarum` 库和读写模式，数据库 DSN、会话密钥、SMTP 密码不写入 YAML。
+`run.sh` 从部署用户的 `/home/gha_deploy/.pam_environment` 加载生产变量，写入 `.env` 并交给 Compose 注入容器；
+Go 程序不会自行读取 `.env`。旧的 `config.example.yaml`、测试和本地配置已归档至 `gar/config/`。
 
 ### 核心处理链路
 ```mermaid

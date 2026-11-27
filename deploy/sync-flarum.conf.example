@@ -1,3 +1,0 @@
-MYSQL_CONTAINER=bbs-mysql
-SOURCE_DB=flarum
-TARGET_DB=bbs

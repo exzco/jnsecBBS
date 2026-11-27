@@ -45,11 +45,8 @@ else
     exit 1
 fi
 
-# 2. 同步基础配置文件与模板
-print_step "同步配置文件与环境变量模板..."
-if [ ! -f config.yaml ]; then
-    cp config.example.yaml config.yaml
-fi
+# 2. 准备环境变量与 Nginx 配置
+print_step "准备环境变量与 Nginx 配置..."
 if [ ! -f .env ]; then
     cp .env.example .env
 fi
@@ -73,14 +70,16 @@ if [ -f "$PAM_ENV_FILE" ]; then
         fi
         export "$var_name=$val"
         if grep -q "^${var_name}=" .env 2>/dev/null; then
-            sed -i "s|^${var_name}=.*|${var_name}=${val}|" .env
+            # DSN 中的 & 等字符必须转义，避免 sed 将旧行拼回配置值。
+            replacement=$(printf '%s' "$val" | sed 's/[\\&|]/\\&/g')
+            sed -i "s|^${var_name}=.*|${var_name}=${replacement}|" .env
         else
             echo "${var_name}=${val}" >> .env
         fi
     done < "$PAM_ENV_FILE"
     print_success "生产环境变量已成功加载并写入 .env"
     print_item "运行模式" "读写模式 (READ_ONLY=${READ_ONLY:-false})" "$CLR_GREEN"
-    print_item "当前库连接" "${APP_DB_DSN:-未显式设置}" "$CLR_BLUE"
+    print_item "配置来源" "$PAM_ENV_FILE" "$CLR_BLUE"
 else
     # 若无 pam_environment，确保 .env 中 READ_ONLY 为 false，库指向 flarum
     if grep -q "^READ_ONLY=true" .env 2>/dev/null; then
@@ -147,22 +146,6 @@ fi
 print_step "开始构建应用镜像 (docker-compose build app)..."
 docker-compose build app
 print_success "应用镜像构建完成"
-
-# 5.1 数据库迁移先于应用启动：应用对未迁移库 Fail-Fast 拒绝启动，绝不能先起容器再补迁移。
-# DDL 需要 root 权限（bbs_go_shared 是最小权限运行账号），迁移容器临时注入 root DSN。
-if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
-    MYSQL_ROOT_PASSWORD=$(grep '^MYSQL_ROOT_PASSWORD=' .env | head -1 | cut -d= -f2-)
-fi
-if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-    print_step "应用数据库迁移 (一次性容器, root DDL 权限)..."
-    docker-compose run --rm \
-        -e "JNSEC_DB_DSN=root:${MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/flarum?charset=utf8mb4&parseTime=True&loc=Local" \
-        app migrate-db
-else
-    print_warning "缺少 MYSQL_ROOT_PASSWORD，使用应用账号执行迁移（新 DDL 迁移将失败）..."
-    docker-compose run --rm app migrate-db
-fi
-print_success "数据库迁移完成"
 
 print_step "启动应用容器 (docker-compose up -d --no-deps app)..."
 docker-compose up -d --no-deps app

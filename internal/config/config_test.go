@@ -23,7 +23,7 @@ func TestEnvOverrides(t *testing.T) {
 	t.Setenv("JNSEC_TRUST_PROXY", "1")
 	t.Setenv("JNSEC_SESSION_SECRET", "secret-from-env")
 
-	cfg, err := Load("no-such-config.yaml")
+	cfg, err := Load("../../config.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}

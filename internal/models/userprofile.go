@@ -3,9 +3,7 @@ package models
 import "time"
 
 // UserProfile 是 Go 专属的用户扩展资料（实名、博客链接）。
-// bbs_user_profiles is explicitly preserved by snapshot sync as target-local
-// data. It may be absent on an unupgraded read-only mirror, so reads degrade
-// to empty fields until an operator runs migrate-db.
+// bbs_user_profiles belongs to Go; its schema is managed by the operator.
 type UserProfile struct {
 	UserID    uint      `gorm:"column:user_id;primaryKey"`
 	RealName  string    `gorm:"column:real_name;type:varchar(100)"`

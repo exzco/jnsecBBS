@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// Open only connects. Schema changes require init-db or migrate-db explicitly.
+// Open only connects; schema changes are managed separately by the operator.
 func Open(driver, dsn string) (*gorm.DB, error) {
 	var dialector gorm.Dialector
 	switch driver {
@@ -42,7 +42,7 @@ func checkFlarumTables(g *gorm.DB) error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("数据库缺少所需 Flarum 表（空库请先运行 bbs init-db）: %v", missing)
+		return fmt.Errorf("数据库缺少所需 Flarum 表，请检查数据库连接和现有表结构: %v", missing)
 	}
 	return nil
 }
@@ -163,7 +163,7 @@ func CheckReadOnly(g *gorm.DB) error {
 	}
 	for _, table := range []string{"bbs_notifications", "bbs_invite_codes"} {
 		if err := g.Exec("SELECT 1 FROM `" + table + "` LIMIT 1").Error; err != nil {
-			return fmt.Errorf("database missing %s; run bbs migrate-db explicitly", table)
+			return fmt.Errorf("database missing %s; contact the operator to update the schema", table)
 		}
 	}
 	return nil
@@ -175,14 +175,14 @@ func CheckWritable(g *gorm.DB) error {
 		return err
 	}
 	if err := g.Exec("SELECT user_id, real_name, blog_url, updated_at FROM bbs_user_profiles LIMIT 0").Error; err != nil {
-		return fmt.Errorf("user profile schema unavailable; run bbs migrate-db: %w", err)
+		return fmt.Errorf("user profile schema unavailable; contact the operator to update the schema: %w", err)
 	}
 	applied, err := migrationHistory(g)
 	if err != nil {
-		return fmt.Errorf("migration history unavailable; run bbs migrate-db: %w", err)
+		return fmt.Errorf("migration history unavailable; contact the operator to check the schema: %w", err)
 	}
 	if len(applied) != len(migrations) {
-		return fmt.Errorf("database has pending migrations; run bbs migrate-db")
+		return fmt.Errorf("database has pending migrations; contact the operator to update the schema")
 	}
 	return nil
 }

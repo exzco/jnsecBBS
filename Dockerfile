@@ -12,12 +12,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=frontend /src/internal/frontend/dist internal/frontend/dist
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /bbs ./cmd/bbs
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /bbs ./cmd
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=build /bbs /app/bbs
+COPY config.yaml /app/config.yaml
 VOLUME ["/app/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/bbs"]

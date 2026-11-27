@@ -151,8 +151,8 @@ func TestStartupChecksNeedNoWritesAndAllowUnversionedReadOnlyMirror(t *testing.T
 	if err := CheckReadOnly(g); err != nil {
 		t.Fatalf("legacy read-only mirror rejected: %v", err)
 	}
-	if err := CheckWritable(g); err == nil || !strings.Contains(err.Error(), "migrate-db") {
-		t.Fatalf("writable startup must request explicit migration: %v", err)
+	if err := CheckWritable(g); err == nil || !strings.Contains(err.Error(), "user profile schema unavailable") {
+		t.Fatalf("writable startup must reject missing user profile schema: %v", err)
 	}
 	if g.Migrator().HasTable("bbs_schema_migrations") || g.Migrator().HasTable("bbs_user_profiles") {
 		t.Fatal("startup checks created missing tables")
@@ -183,7 +183,7 @@ func TestStartupChecksNeedNoWritesAndAllowUnversionedReadOnlyMirror(t *testing.T
 func TestMigrateRefusesEmptyDatabaseAndUnknownHistory(t *testing.T) {
 	g := migrationTestDB(t)
 	if err := Migrate(g); err == nil {
-		t.Fatal("empty database must use init-db")
+		t.Fatal("empty database must fail startup")
 	}
 	if g.Migrator().HasTable("bbs_schema_migrations") {
 		t.Fatal("invalid database was modified")

@@ -9,13 +9,12 @@ mock-assets/
 *.db-shm
 *.db-wal
 *.log
-config.yaml
-config-test.yaml
 .env
 /deploy/nginx.conf
 frontend/node_modules/
 frontend/.npm-cache/
 old_backup_data/
+/gar/
 *.exe~
 
 __pycache__/
