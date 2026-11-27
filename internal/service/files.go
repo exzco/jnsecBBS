@@ -14,31 +14,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// UploadFile 与 flarum_fof_upload_files 兼容的文件记录模型。
-type UploadFile struct {
-	ID           uint      `gorm:"column:id;primaryKey"`
-	ActorID      uint      `gorm:"column:actor_id"`
-	BaseName     string    `gorm:"column:base_name"`
-	Path         string    `gorm:"column:path"`
-	URL          string    `gorm:"column:url"`
-	Type         string    `gorm:"column:type"`
-	Size         int64     `gorm:"column:size"`
-	UploadMethod string    `gorm:"column:upload_method"`
-	CreatedAt    time.Time `gorm:"column:created_at"`
-	UUID         string    `gorm:"column:uuid"`
-	Tag          string    `gorm:"column:tag"`
-}
-
-func (UploadFile) TableName() string { return "flarum_fof_upload_files" }
-
 // UploadResult 上传完成返回（与前端约定）。
 type UploadResult struct {
-	URL      string
-	UUID     string
-	Name     string
-	Size     int64
-	IsImage  bool
-	Markdown string
+	URL      string `json:"url"`
+	UUID     string `json:"uuid"`
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+	IsImage  bool   `json:"isImage"`
+	Markdown string `json:"markdown"`
 }
 
 var blockedExts = map[string]bool{
@@ -49,6 +32,12 @@ var blockedExts = map[string]bool{
 
 // SaveUpload 校验扩展名、落盘到 data/assets/files/<日期>/ 并写入上传记录。
 func (s *Service) SaveUpload(u *models.User, filename, contentType string, size int64, r io.Reader) (UploadResult, *Error) {
+	if s.cfg.ReadOnly {
+		return UploadResult{}, Err(http.StatusForbidden, "只读模式，暂不能上传文件。")
+	}
+	if size > 25<<20 {
+		return UploadResult{}, Err(http.StatusBadRequest, "文件大小不能超过 25MB。")
+	}
 	ext := strings.ToLower(filepath.Ext(filename))
 	if blockedExts[ext] {
 		return UploadResult{}, Err(http.StatusBadRequest, "出于安全原因，禁止上传可执行或脚本文件。")
@@ -77,7 +66,7 @@ func (s *Service) SaveUpload(u *models.User, filename, contentType string, size 
 	if isImage {
 		tag = "image-preview"
 	}
-	if err := s.db.Create(&UploadFile{
+	if err := s.db.Create(&models.UploadFile{
 		ActorID: u.ID, BaseName: filename, Path: relPath, URL: publicURL,
 		Type: contentType, Size: size, UploadMethod: "local",
 		CreatedAt: time.Now(), UUID: fileUUID, Tag: tag,
@@ -94,13 +83,30 @@ func (s *Service) SaveUpload(u *models.User, filename, contentType string, size 
 	return UploadResult{URL: publicURL, UUID: fileUUID, Name: filename, Size: size, IsImage: isImage, Markdown: md}, nil
 }
 
-// FindUpload 按 UUID 查找上传记录（附件下载入口）。
-func (s *Service) FindUpload(id string) (*UploadFile, *Error) {
-	var rec UploadFile
+// DownloadUpload 查找附件记录并解析可下载文件的路径与原始文件名。
+func (s *Service) DownloadUpload(id string) (string, string, *Error) {
+	var rec models.UploadFile
 	if err := s.db.Where("uuid = ?", id).First(&rec).Error; err != nil {
-		return nil, Err(http.StatusNotFound, "文件不存在。")
+		return "", "", Err(http.StatusNotFound, "文件不存在。")
 	}
-	return &rec, nil
+	cleanRel := filepath.Clean("/" + rec.Path)
+	paths := []string{filepath.Join(s.cfg.DataDir, "assets", "files", cleanRel)}
+	if s.cfg.AssetsDir != "" {
+		paths = append(paths, filepath.Join(s.cfg.AssetsDir, "files", cleanRel))
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", "", Err(http.StatusInternalServerError, "文件读取失败。")
+		}
+		if !info.IsDir() {
+			return path, rec.BaseName, nil
+		}
+	}
+	return "", "", Err(http.StatusNotFound, "文件未找到。")
 }
 
 func formatBytes(b int64) string {

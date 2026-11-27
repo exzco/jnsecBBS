@@ -3,21 +3,25 @@ package web
 
 import (
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"html"
 	"io/fs"
+	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/dchest/captcha"
-	"github.com/exzco/bbs/internal/api"
 	"github.com/exzco/bbs/internal/auth"
 	"github.com/exzco/bbs/internal/config"
-	"github.com/exzco/bbs/internal/db"
 	"github.com/exzco/bbs/internal/frontend"
+	"github.com/exzco/bbs/internal/handler"
+	"github.com/exzco/bbs/internal/infra/db"
 	"github.com/gorilla/csrf"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -66,7 +70,7 @@ func (s *Server) Engine() *echo.Echo {
 	e.Use(s.session())
 
 	// REST API
-	api.New(s.cfg, s.db).Register(e)
+	handler.New(s.cfg, s.db).Register(e)
 
 	// 磁盘目录伺服：/assets/* 头像与附件（优先 DataDir/assets，回退 AssetsDir），
 	// /avatars/* 上传头像。
@@ -213,20 +217,58 @@ func csrfKey(secret string) []byte {
 	return sum[:]
 }
 
+// normalizeTrustedOrigins 提取 host（兼容带协议头的配置项，匹配 gorilla/csrf 的 host 比对）。
+func normalizeTrustedOrigins(origins []string) []string {
+	out := make([]string, 0, len(origins))
+	for _, raw := range origins {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		if strings.Contains(s, "://") {
+			if u, err := url.Parse(s); err == nil && u.Host != "" {
+				s = u.Host
+			}
+		}
+		out = append(out, strings.TrimSuffix(s, "/"))
+	}
+	return out
+}
+
 // attachCSRF 把 gorilla/csrf 校验挂到引擎最外层（pre-router），与迁移前 csrf 包裹整个引擎的顺序一致；
 // 明文 HTTP 部署先在请求上打标放宽 Origin/Referer 比对，否则写请求会全部 403。
 func (s *Server) attachCSRF(e *echo.Echo) {
 	opts := []csrf.Option{
 		csrf.Secure(s.cfg.CookieSecure),
-		csrf.CookieName("jnsec_csrf"),
+		csrf.Path("/"),
+		csrf.MaxAge(auth.SessionMaxAge),
+		// 旧名称可能留有多个不同 Path 的 Cookie，换名避免浏览器继续优先发送旧值。
+		csrf.CookieName("jnsec_csrf_token"),
 		csrf.FieldName("_csrf"),
 		csrf.RequestHeader("X-CSRF-Token"),
 	}
-	if len(s.cfg.TrustedOrigins) > 0 {
-		opts = append(opts, csrf.TrustedOrigins(s.cfg.TrustedOrigins))
+	if origins := normalizeTrustedOrigins(s.cfg.TrustedOrigins); len(origins) > 0 {
+		opts = append(opts, csrf.TrustedOrigins(origins))
 	}
 	opts = append(opts, csrf.ErrorHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, fmt.Sprintf("CSRF 校验失败，请刷新页面重试。（原因: %v）", csrf.FailureReason(r)), http.StatusForbidden)
+		reason := csrf.FailureReason(r)
+		_, cookieErr := r.Cookie("jnsec_csrf_token")
+		log.Printf("[csrf] 校验失败 method=%q path=%q host=%q origin=%q proto=%q hasCookie=%v reason=%q cf_ray=%q",
+			r.Method, r.URL.Path, r.Host, r.Header.Get("Origin"),
+			r.Header.Get("X-Forwarded-Proto"), cookieErr == nil, reason, r.Header.Get("CF-Ray"))
+		code := "csrf_failed"
+		if errors.Is(reason, csrf.ErrBadToken) || errors.Is(reason, csrf.ErrNoToken) {
+			code = "csrf_invalid"
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(map[string]string{
+			"error": "CSRF 校验失败，请刷新页面重试。",
+			"code":  code,
+		}); err != nil {
+			log.Printf("[csrf] 响应写入失败: %v", err)
+		}
 	})))
 	protect := csrf.Protect(csrfKey(s.cfg.SessionSecret), opts...)
 	e.Pre(echo.WrapMiddleware(func(next http.Handler) http.Handler {

@@ -4,12 +4,12 @@ package service
 import (
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/exzco/bbs/internal/auth"
-	"github.com/exzco/bbs/internal/markdown"
+	"github.com/exzco/bbs/internal/content"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/exzco/bbs/internal/store"
 	"gorm.io/gorm"
 )
 
@@ -52,7 +52,7 @@ func (s *Service) Home(u *models.User) []HomeCard {
 			ids = append(ids, ch.ID)
 		}
 		var discs []models.Discussion
-		err := store.VisibleDiscussions(s.db, u).Joins("JOIN flarum_discussion_tag dt ON dt.discussion_id = flarum_discussions.id").
+		err := visibleDiscussions(s.db, u).Joins("JOIN flarum_discussion_tag dt ON dt.discussion_id = flarum_discussions.id").
 			Where("dt.tag_id IN ? AND flarum_discussions.hidden_at IS NULL AND flarum_discussions.is_approved = 1", ids).
 			Order("flarum_discussions.last_posted_at DESC, flarum_discussions.id DESC").
 			Preload("User").Preload("Tags").
@@ -89,17 +89,23 @@ type RecentQuery struct {
 
 // Recent 全站最新讨论流。
 func (s *Service) Recent(u *models.User, q RecentQuery) ListResult {
-	base := store.VisibleDiscussions(s.db, u).
+	var excluded []string
+	for _, slug := range q.ExcludeSlugs {
+		if slug = strings.TrimSpace(slug); slug != "" && len(slug) <= 100 && len(excluded) < 10 {
+			excluded = append(excluded, slug)
+		}
+	}
+	base := visibleDiscussions(s.db, u).
 		Where("flarum_discussions.hidden_at IS NULL AND flarum_discussions.is_approved = 1")
 	if q.Sidebar {
 		base = base.Where(
 			"NOT EXISTS (SELECT 1 FROM flarum_discussion_tag sdt JOIN flarum_tags st ON st.id = sdt.tag_id " +
 				"WHERE sdt.discussion_id = flarum_discussions.id AND st.name LIKE '%周报%')")
 	}
-	if len(q.ExcludeSlugs) > 0 {
+	if len(excluded) > 0 {
 		base = base.Where(
 			"NOT EXISTS (SELECT 1 FROM flarum_discussion_tag exdt JOIN flarum_tags ext ON ext.id = exdt.tag_id "+
-				"WHERE exdt.discussion_id = flarum_discussions.id AND ext.slug IN ?)", q.ExcludeSlugs)
+				"WHERE exdt.discussion_id = flarum_discussions.id AND ext.slug IN ?)", excluded)
 	}
 	var total int64
 	base.Session(&gorm.Session{}).Count(&total)
@@ -107,7 +113,7 @@ func (s *Service) Recent(u *models.User, q RecentQuery) ListResult {
 	pages := Paginate(int(total), q.Page, perPageDiscussions)
 	var discs []models.Discussion
 	order := "flarum_discussions.last_posted_at DESC, flarum_discussions.id DESC"
-	if q.StickyFirst {
+	if q.StickyFirst && !q.Sidebar {
 		order = "flarum_discussions.is_sticky DESC, " + order
 	}
 	base.Session(&gorm.Session{}).
@@ -141,18 +147,22 @@ type ActivityData struct {
 // UserActivity 某用户一年内发帖 + 非首帖回复按日计数。
 // 年份边界按北京时间计算后转 UTC 再过滤，避免 16:00-24:00 的活动跨日错桶。
 func (s *Service) UserActivity(viewer *models.User, username string, year int) (ActivityData, *Error) {
+	now := time.Now()
+	if year < 2000 || year > now.Year() {
+		year = now.Year()
+	}
 	var p models.User
 	if err := s.db.Where("lower(username) = lower(?)", username).First(&p).Error; err != nil {
 		return ActivityData{}, Err(http.StatusNotFound, "该用户不存在。")
 	}
-	now := time.Now().In(cst)
+	now = now.In(cst)
 	start := time.Date(year, 1, 1, 0, 0, 0, 0, cst).UTC()
 	end := time.Date(year+1, 1, 1, 0, 0, 0, 0, cst).UTC()
 
 	canSeeHidden := viewer.IsModerator()
-	dq := store.VisibleDiscussions(s.db, viewer).
+	dq := visibleDiscussions(s.db, viewer).
 		Where("flarum_discussions.user_id = ? AND flarum_discussions.created_at >= ? AND flarum_discussions.created_at < ?", p.ID, start, end)
-	pq := store.VisiblePosts(s.db, viewer).
+	pq := visiblePosts(s.db, viewer).
 		Where("flarum_posts.user_id = ? AND flarum_posts.created_at >= ? AND flarum_posts.created_at < ? AND flarum_posts.hidden_at IS NULL AND flarum_posts.type = ? AND flarum_posts.is_approved = 1", p.ID, start, end, "comment").
 		Where("NOT EXISTS (SELECT 1 FROM flarum_discussions activity_discussion WHERE activity_discussion.id = flarum_posts.discussion_id AND (activity_discussion.first_post_id = flarum_posts.id OR (COALESCE(activity_discussion.first_post_id, 0) = 0 AND flarum_posts.number = 1)))")
 	if !canSeeHidden {
@@ -254,7 +264,7 @@ func (s *Service) TagDiscussions(u *models.User, slugParam string, page int, all
 	for _, ch := range children {
 		ids = append(ids, ch.ID)
 	}
-	base := store.VisibleDiscussions(s.db, u).Joins("JOIN flarum_discussion_tag dt ON dt.discussion_id = flarum_discussions.id").
+	base := visibleDiscussions(s.db, u).Joins("JOIN flarum_discussion_tag dt ON dt.discussion_id = flarum_discussions.id").
 		Where("dt.tag_id IN ? AND flarum_discussions.hidden_at IS NULL AND flarum_discussions.is_approved = 1", ids)
 	var total int64
 	base.Session(&gorm.Session{}).Distinct("flarum_discussions.id").Count(&total)
@@ -306,8 +316,8 @@ func (s *Service) PostForm(u *models.User) []PostFormGroup {
 }
 
 // Preview 渲染 Markdown 预览（与发帖同一条消毒管线）。
-func (s *Service) Preview(content string) string {
-	html, _ := markdown.Render(content, nil)
+func (s *Service) Preview(source string) string {
+	html, _ := content.Render(source, nil)
 	return html
 }
 
@@ -336,7 +346,7 @@ func (s *Service) Profile(viewer *models.User, username string) (ProfileData, *E
 		return ProfileData{}, Err(http.StatusNotFound, "该用户不存在。")
 	}
 	canSeeHidden := viewer.IsModerator()
-	dQuery := store.VisibleDiscussions(s.db, viewer).Where("flarum_discussions.user_id = ?", p.ID)
+	dQuery := visibleDiscussions(s.db, viewer).Where("flarum_discussions.user_id = ?", p.ID)
 	if !canSeeHidden {
 		dQuery = dQuery.Where("flarum_discussions.hidden_at IS NULL AND flarum_discussions.is_approved = 1")
 	}
@@ -347,7 +357,7 @@ func (s *Service) Profile(viewer *models.User, username string) (ProfileData, *E
 		Order("flarum_discussions.last_posted_at DESC").Limit(10).Find(&discs)
 
 	var posts []models.Post
-	store.VisiblePosts(s.db, viewer).Where("user_id = ? AND hidden_at IS NULL AND type = ? AND is_approved = ?", p.ID, "comment", true).
+	visiblePosts(s.db, viewer).Where("user_id = ? AND hidden_at IS NULL AND type = ? AND is_approved = ?", p.ID, "comment", true).
 		Preload("Discussion").Preload("User").
 		Order("created_at DESC").Limit(10).Find(&posts)
 	rows := make([]ProfilePostRow, 0, len(posts))
@@ -380,6 +390,7 @@ type SearchData struct {
 
 // Search 站内搜索：标题与正文各取最近 20 条。
 func (s *Service) Search(viewer *models.User, q string) SearchData {
+	q = strings.TrimSpace(q)
 	res := SearchData{Q: q}
 	if len([]rune(q)) < 2 {
 		return res
@@ -387,11 +398,11 @@ func (s *Service) Search(viewer *models.User, q string) SearchData {
 	res.Found = true
 	like := "%" + q + "%"
 	var discs []models.Discussion
-	store.VisibleDiscussions(s.db, viewer).Where("hidden_at IS NULL AND is_approved = 1 AND title LIKE ?", like).
+	visibleDiscussions(s.db, viewer).Where("hidden_at IS NULL AND is_approved = 1 AND title LIKE ?", like).
 		Preload("User").Preload("Tags").
 		Order("last_posted_at DESC").Limit(20).Find(&discs)
 	var posts []models.Post
-	store.VisiblePosts(s.db, viewer).Where("hidden_at IS NULL AND is_approved = 1 AND content LIKE ? AND type = ?", like, "comment").
+	visiblePosts(s.db, viewer).Where("hidden_at IS NULL AND is_approved = 1 AND content LIKE ? AND type = ?", like, "comment").
 		Preload("User").Preload("Discussion").
 		Order("created_at DESC").Limit(20).Find(&posts)
 	res.Discussions = s.Summaries(discs, viewer)

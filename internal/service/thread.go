@@ -8,10 +8,9 @@ import (
 	"time"
 
 	"github.com/exzco/bbs/internal/auth"
-	"github.com/exzco/bbs/internal/cache"
+	"github.com/exzco/bbs/internal/content"
+	"github.com/exzco/bbs/internal/infra/cache"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/exzco/bbs/internal/slug"
-	"github.com/exzco/bbs/internal/store"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -21,7 +20,7 @@ import (
 // loadDiscussion 加载讨论并做可见性检查。
 func (s *Service) loadDiscussion(u *models.User, id uint) (*models.Discussion, *Error) {
 	var d models.Discussion
-	if err := store.VisibleDiscussions(s.db, u).Preload("User").Preload("Tags").First(&d, id).Error; err != nil {
+	if err := visibleDiscussions(s.db, u).Preload("User").Preload("Tags").First(&d, id).Error; err != nil {
 		return nil, Err(http.StatusNotFound, "该帖子不存在。")
 	}
 	s.FillTagPerms(d.Tags)
@@ -432,9 +431,9 @@ type CreateDiscussionResult struct {
 }
 
 // CreateDiscussion 建讨论与首帖（单事务），并同步冗余计数与 @提及 通知。
-func (s *Service) CreateDiscussion(u *models.User, title, content string, tagIDs []uint) (CreateDiscussionResult, *Error) {
+func (s *Service) CreateDiscussion(u *models.User, title, source string, tagIDs []uint) (CreateDiscussionResult, *Error) {
 	title = strings.TrimSpace(title)
-	content = strings.TrimSpace(content)
+	source = strings.TrimSpace(source)
 
 	postable := s.PostableTags(u)
 	okIDs := map[uint]models.Tag{}
@@ -452,7 +451,7 @@ func (s *Service) CreateDiscussion(u *models.User, title, content string, tagIDs
 	if len([]rune(title)) < 3 || len([]rune(title)) > 200 {
 		return CreateDiscussionResult{}, Err(http.StatusBadRequest, "标题长度需在 3-200 字之间。")
 	}
-	if content == "" {
+	if source == "" {
 		return CreateDiscussionResult{}, Err(http.StatusBadRequest, "正文不能为空。")
 	}
 	if len(chosen) == 0 {
@@ -466,11 +465,11 @@ func (s *Service) CreateDiscussion(u *models.User, title, content string, tagIDs
 	d := models.Discussion{
 		Title: title, CommentCount: 1, ParticipantCount: 1, PostNumberIndex: 1,
 		CreatedAt: now, LastPostedAt: &now, LastPostNumber: &one,
-		SlugCol: slug.Make(title),
+		SlugCol: content.MakeSlug(title),
 		UserID:  &uid, LastPostUserID: &uid, IsApproved: true,
 	}
 	post := models.Post{Number: &one, UserID: &uid, CreatedAt: now, Type: "comment", IsApproved: true}
-	post.SetMarkdown(content)
+	post.SetMarkdown(source)
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&d).Error; err != nil {
 			return err
@@ -507,7 +506,7 @@ func (s *Service) CreateDiscussion(u *models.User, title, content string, tagIDs
 				return err
 			}
 		}
-		if _, err := s.notifyMentions(tx, content, u.ID, d.ID, post.ID); err != nil {
+		if _, err := s.notifyMentions(tx, source, u.ID, d.ID, post.ID); err != nil {
 			return err
 		}
 		return nil
@@ -530,6 +529,9 @@ type ReplyResult struct {
 
 // Reply 回帖：锁定主题行串行分配楼层号，单事务维护计数与通知。
 func (s *Service) Reply(u *models.User, discussionID uint, content string) (ReplyResult, *Error) {
+	if strings.TrimSpace(content) == "" {
+		return ReplyResult{}, Err(http.StatusBadRequest, "回复内容不能为空。")
+	}
 	d, err := s.loadDiscussion(u, discussionID)
 	if err != nil {
 		return ReplyResult{}, err
@@ -680,7 +682,7 @@ func (s *Service) Moderate(u *models.User, id uint, action, title string, tagIDs
 		updates := map[string]any{}
 		if title = strings.TrimSpace(title); title != "" {
 			updates["title"] = title
-			updates["slug"] = slug.Make(title)
+			updates["slug"] = content.MakeSlug(title)
 		}
 		if len(tagIDs) > 0 {
 			postable := s.PostableTags(u)

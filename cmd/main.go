@@ -12,10 +12,9 @@ import (
 	"time"
 
 	"github.com/exzco/bbs/internal/config"
-	"github.com/exzco/bbs/internal/db"
+	"github.com/exzco/bbs/internal/infra/db"
 	"github.com/exzco/bbs/internal/service"
 	"github.com/exzco/bbs/internal/web"
-	"gorm.io/gorm"
 )
 
 func main() {
@@ -44,23 +43,6 @@ func loadCfg(args []string) *config.Config {
 	return cfg
 }
 
-func openDB(cfg *config.Config) *gorm.DB {
-	g, err := db.Open(cfg.Database.Driver, cfg.Database.DSN)
-	if err != nil {
-		log.Fatalf("连接数据库失败: %v", err)
-	}
-	if cfg.ReadOnly {
-		if err := db.CheckReadOnly(g); err != nil {
-			log.Fatalf("只读数据库校验失败: %v", err)
-		}
-		return g
-	}
-	if err := db.CheckWritable(g); err != nil {
-		log.Fatalf("数据库校验失败: %v", err)
-	}
-	return g
-}
-
 func serveCmd(args []string) {
 	cfg := loadCfg(args)
 	if cfg.SessionSecret == "" || cfg.SessionSecret == "CHANGE-ME-to-a-random-64-char-string" {
@@ -70,7 +52,10 @@ func serveCmd(args []string) {
 		log.Println("[警告] JNSEC_ASSETS_DIR 未配置：旧 Flarum 头像/附件（/assets/*）将无法访问，全部回退首字母头像。")
 	}
 
-	g := openDB(cfg)
+	g, err := db.Open(cfg.Database.Driver, cfg.Database.DSN)
+	if err != nil {
+		log.Fatalf("连接数据库失败: %v", err)
+	}
 	srv, err := web.New(cfg, g)
 	if err != nil {
 		log.Fatalf("初始化 Web 服务失败: %v", err)

@@ -1,7 +1,7 @@
 // 全局会话：/api/me 查询 + CSRF token 注入 + 登录态快捷方法
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { api, setCsrfToken } from "@/lib/api"
-import type { SessionInfo, User } from "@/lib/types"
+import type { SessionInfo } from "@/lib/types"
 
 export function useSession() {
   return useQuery({
@@ -24,7 +24,8 @@ export function useUnread(enabled: boolean) {
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
     queryFn: async () => {
-      const data = await api<{ user: User | null; unread?: number }>("/api/me")
+      const data = await api<SessionInfo>("/api/me")
+      setCsrfToken(data.csrfToken)
       return data.unread ?? 0
     },
   })

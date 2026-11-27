@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useMutation } from "@tanstack/react-query"
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router"
 import { toast } from "sonner"
-import { api } from "@/lib/api"
+import { api, setCsrfToken } from "@/lib/api"
 import type { User } from "@/lib/types"
 import { useInvalidateSession, useSession } from "@/lib/session"
 import { Button } from "@/components/ui/button"
@@ -33,8 +33,9 @@ export default function LoginPage() {
       : "/"
 
   const login = useMutation({
-    mutationFn: () => api<{ user: User }>("/api/auth/login", { json: { username, password } }),
-    onSuccess: () => {
+    mutationFn: () => api<{ user: User; csrfToken?: string }>("/api/auth/login", { json: { username, password } }),
+    onSuccess: (data) => {
+      if (data.csrfToken) setCsrfToken(data.csrfToken)
       invalidate()
       toast.success("登录成功")
       navigate(safeFrom, { replace: true })

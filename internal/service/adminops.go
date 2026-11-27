@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/exzco/bbs/internal/auth"
-	"github.com/exzco/bbs/internal/cache"
+	"github.com/exzco/bbs/internal/content"
+	"github.com/exzco/bbs/internal/infra/cache"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/exzco/bbs/internal/slug"
 	"gorm.io/gorm"
 )
 
@@ -96,7 +96,7 @@ func (s *Service) SaveTag(in TagInput) *Error {
 		return Err(http.StatusBadRequest, "版块名称不能为空。")
 	}
 	if slugIn == "" {
-		slugIn = slug.Make(name)
+		slugIn = content.MakeSlug(name)
 	}
 	if !slugRe.MatchString(slugIn) {
 		return Err(http.StatusBadRequest, "URL 标识需为字母、数字或连字符（中文留空可自动生成）。")

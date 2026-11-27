@@ -3,9 +3,7 @@ package models
 import (
 	"time"
 
-	"github.com/exzco/bbs/internal/flarum"
-
-	"github.com/exzco/bbs/internal/slug"
+	"github.com/exzco/bbs/internal/content"
 )
 
 // 字段类型按生产库 information_schema 实测对齐（2026-10 采集），
@@ -45,7 +43,7 @@ func (d *Discussion) Slug() string {
 	if d.SlugCol != "" {
 		return d.SlugCol
 	}
-	return slug.Make(d.Title)
+	return content.MakeSlug(d.Title)
 }
 
 func (d *Discussion) IsHidden() bool { return d.HiddenAt != nil }
@@ -86,11 +84,11 @@ func (p *Post) Markdown() string {
 	if p.Type != "comment" {
 		return ""
 	}
-	return flarum.DecodeContent(p.Content)
+	return content.DecodeContent(p.Content)
 }
 
 func (p *Post) SetMarkdown(md string) {
-	p.Content = flarum.EncodeContent(md)
+	p.Content = content.EncodeContent(md)
 }
 
 // PostNumber 返回楼层号（0 表示无楼层，如 discussionRenamed 等系统帖）。

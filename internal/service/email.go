@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/exzco/bbs/internal/config"
-	"github.com/exzco/bbs/internal/mail"
+	"github.com/exzco/bbs/internal/infra/mail"
 	"github.com/exzco/bbs/internal/models"
 	"gorm.io/gorm"
 )

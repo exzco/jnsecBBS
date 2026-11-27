@@ -26,4 +26,5 @@ work/
 AGENTS.md
 agent.md
 *_test.go
+!/tests/**/*_test.go
 AGENT_SYNC.md

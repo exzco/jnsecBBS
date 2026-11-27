@@ -24,25 +24,25 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  php:
-    image: jnsecbbs:php8.3.36
-    container_name: bbs-php
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
-    ports:
-      - "8081:80"
-    volumes:
-      - wwwdata:/var/www/bbs
-      - bbslog:/var/log/apache2
-    environment:
-      TZ: ${TZ}
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+  # php:
+  #   image: jnsecbbs:php8.3.36
+  #   container_name: bbs-php
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+  #   ports:
+  #     - "8081:80"
+  #   volumes:
+  #     - wwwdata:/var/www/bbs
+  #     - bbslog:/var/log/apache2
+  #   environment:
+  #     TZ: ${TZ}
+  #   logging:
+  #     driver: json-file
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
 
   app:
     image: bbs:latest
@@ -65,7 +65,7 @@ services:
       JNSEC_TRUSTED_ORIGINS: ${TRUSTED_ORIGINS}
       JNSEC_TRUST_PROXY: "true"
       JNSEC_DATA_DIR: /app/data
-      # 旧站头像/附件目录。保留内联默认值：缺失时 /assets 路由不注册，旧用户头像会静默丢失
+      # 历史头像和附件目录，由 wwwdata 只读挂载提供，PHP 停用后仍需保留。
       JNSEC_ASSETS_DIR: ${ASSETS_DIR:-/flarum/public/assets}
       JNSEC_REGISTRATION: ${REGISTRATION}
       JNSEC_READ_ONLY: ${READ_ONLY:-false}
@@ -78,8 +78,8 @@ services:
       JNSEC_SMTP_FROM: ${SMTP_FROM:-}
       TZ: ${TZ}
     volumes:
-      - appdata:/app/data
-      - wwwdata:/flarum:ro
+      - appdata:/app/data     # Go 新上传的头像和附件
+      - wwwdata:/flarum:ro    # 历史头像和附件
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/me >/dev/null 2>&1 || exit 1"]
       interval: 30s
@@ -93,10 +93,11 @@ services:
         max-file: "3"
 
 volumes:
+  # 现有 MySQL 数据，继续复用原外部卷。
   bbsmysql:
     external: true
+  # Go 仍读取其中的 public/assets，不依赖 PHP 服务运行。
   wwwdata:
     external: true
-  bbslog:
-    external: true
+  # Go 应用持久化数据，实际卷名带 Compose 项目前缀。
   appdata: {}

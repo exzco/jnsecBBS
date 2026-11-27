@@ -5,12 +5,12 @@ Go + React BBS 服务，与现有 Flarum MySQL 数据库共享运行。
 ## 1. 技术栈 (Tech Stack)
 
 ### 后端服务 (Backend)
-- **核心语言与框架**：Go 1.25+、Gin 
+- **核心语言与框架**：Go 1.25+、Echo
 - **数据持久化**：GORM，生产环境运行于 MySQL 5.7
 - **内容解析与安全**：
   - `goldmark`：CommonMark 标准 Markdown 解析器
   - `bluemonday`：HTML 白名单净化过滤（抵御 XSS 注入）
-  - `internal/flarum`：Flarum s9e XML 逆向还原引擎（还原历史发帖原文并校验 SHA-256 一致性）
+  - `internal/content`：历史 XML / JSON 正文编解码、Markdown 安全渲染与标题路径生成
 - **打包集成**：标准库 `embed.FS`，前端构建产物直接内嵌于单一 Go 二进制可执行文件。
 
 ### 前端系统 (Frontend)
@@ -30,15 +30,19 @@ Go + React BBS 服务，与现有 Flarum MySQL 数据库共享运行。
 jnsecBBS/
 ├── cmd/                   # 服务启动入口 (serve)
 ├── internal/
-│   ├── api/               # RESTful API 路由分发、业务控制器与只读拦截器
 │   ├── auth/              # 鉴权引擎 (RBAC 角色组、Session 会话、密码校验)
 │   ├── config/            # 配置映射 (支持 config.yaml 与 JNSEC_* 环境变量覆盖)
-│   ├── db/                # 数据库连接、GORM 迁移与只读检查
-│   ├── flarum/            # Flarum s9e XML 格式还原引擎 (与旧版 PHP 行为完全等价)
+│   ├── content/           # 正文编解码、Markdown 渲染、提及与标题路径
 │   ├── frontend/          # embed.FS 静态产物内嵌入口 (dist/*)
-│   ├── markdown/          # Markdown 渲染与 XSS 净化管道
+│   ├── handler/           # RESTful API 路由、请求绑定、鉴权、限流与响应输出
+│   ├── infra/             # 基础设施
+│   │   ├── cache/         # 进程内 TTL 缓存、缓存键及失效操作
+│   │   ├── db/            # MySQL / SQLite 数据库连接与历史数据一致性维护
+│   │   └── mail/          # SMTP 发送、TLS 连接与邮件格式
 │   ├── models/            # 数据模型定义 (兼容原 Flarum 表结构及扩展表)
-│   ├── web/               # Web 服务装配 (Gin 引擎、CSRF 中间件、SPA Fallback、头像生成)
+│   ├── service/           # 论坛业务、可见性查询、事务、通知、资料、附件和管理操作
+│   └── web/               # Echo 服务装配、CSRF、SPA、资源路由与健康检查
+├── tests/                 # 后端测试按模块分目录；testdb/ 提供临时库初始化
 ├── frontend/              # React 19 SPA 前端工程 (源码、组件、状态与页面)
 ├── deploy/                # 部署配置 (Nginx 配置模板)
 ├── config.yaml            # 唯一应用配置，凭据由 JNSEC_* 环境变量注入
@@ -47,8 +51,16 @@ jnsecBBS/
 └── docker-compose.yaml    # 生产容器编排文件
 ```
 
-容器启动时执行 `bbs serve`，连接现有数据库并检查表结构。数据库结构变更由运维单独管理，部署脚本不再执行迁移。
+容器启动时执行 `bbs serve`，连接现有数据库并启动服务，不再核对所需表清单或迁移版本。数据库结构变更由运维单独管理，部署脚本不再执行迁移。
 旧的初始化、迁移和审计命令已移除，相关工具及一次性 SQL 保留在 `gar/`。
+
+后端测试统一存放在 `tests/`，通过公开接口验证行为，执行 `go test ./...` 仍会包含全部测试。
+`internal/infra/db` 负责数据库连接与论坛历史数据一致性处理，`internal/infra/cache` 提供进程内 TTL 缓存，当前未接入 Redis。
+临时测试库由 `tests/testdb/` 初始化，数据库相关测试放在 `tests/infra/db/`；线上不依赖迁移记录表，也不执行初始化或表结构迁移。
+
+`handler` 负责 HTTP 参数解析、JSON 绑定及响应输出；正文与查询规则、附件限制和存储路径由 `service` 处理；
+`models` 定义数据库字段及实体自身行为，不依赖 Echo 或请求上下文。
+正文编解码、渲染与标题路径生成统一在 `internal/content`；SMTP 客户端位于 `internal/infra/mail`，邮件通知业务保留在 `service/email.go`。
 
 应用配置统一使用 `config.yaml`，镜像内路径为 `/app/config.yaml`。
 配置优先级为 `JNSEC_*` 环境变量 > YAML > 程序默认值。
@@ -64,7 +76,7 @@ flowchart TD
     CSRF --> Session[Session 会话装配]
     Session --> Router{路由分发}
     
-    Router -->|/api/*| API[internal/api 业务控制层]
+    Router -->|/api/*| API[internal/handler 请求处理层]
     Router -->|/assets/* /avatars/*| Static[静态资源 / 字环头像生成]
     Router -->|其他路由| SPA[internal/frontend 内嵌 React SPA]
 
@@ -72,8 +84,7 @@ flowchart TD
     ReadOnlyCheck -->|写入操作且处于只读期| Reject[拦截返回 403 / code=read_only]
     ReadOnlyCheck -->|读操作或允许写入| Service[数据访问层 & 内容处理]
     
-    Service --> FlarumXML[internal/flarum s9e 还原引擎]
-    FlarumXML --> Markdown[internal/markdown goldmark + bluemonday]
+    Service --> Content[internal/content 编解码与安全渲染]
     Service --> DB[(GORM -> MySQL / SQLite)]
 ```
 
@@ -120,7 +131,7 @@ flowchart LR
 
 ## 4. 部署后架构与运行时拓扑 (Deployed Architecture)
 
-2026-10-27 已切换为**新站对外读写、Go 与旧站共享 `flarum` 数据库**。旧站和 MySQL 保持运行，旧站公网入口关闭；`bbs`、`bbs_v2` 保留为停用副本，两个同步任务均已停止。
+2026-10-27 已切换为**新站直接读写 `flarum` 数据库**。当前 PHP 服务已停用，由 Go 与 MySQL 提供服务；`bbs`、`bbs_v2` 保留为停用副本，两个同步任务均已停止。
 
 ```mermaid
 flowchart TD
@@ -129,19 +140,17 @@ flowchart TD
     Cloudflare -->|HTTP:80 透传| Nginx[VPS 宿主机 Nginx 网关]
     
     subgraph DomainRouting [生产入口]
-        Nginx -->|new.bbs.jnsec.org| GoApp[新站容器 bbs-app<br/>127.0.0.1:8080 / 可读写]
-        Operator[bbs.jnsec.org] -->|127.0.0.1:8081| PHPApp[旧站容器 bbs-php<br/>保持运行 / 公网端口已阻断]
+        Nginx -->|bbs.jnsec.org / new.bbs.jnsec.org| GoApp[新站容器 bbs-app<br/>127.0.0.1:8080 / 可读写]
     end
     
     subgraph DataStorage [MySQL 5.7 / bbs-mysql]
-        PHPApp -->|保留连接| DB_Flarum[(共享运行库: flarum)]
-        GoApp -->|读写| DB_Flarum
+        GoApp -->|读写| DB_Flarum[(运行库: flarum)]
         Inactive[(停用副本: bbs / bbs_v2)]
     end
 
-    subgraph Volumes [共享持久化卷]
-        Vol_WWW[外部卷 wwwdata] -.->|挂载 /var/www/bbs| PHPApp
-        Vol_WWW -.->|只读挂载 /flarum:ro| GoApp
+    subgraph Volumes [持久化卷]
+        Vol_DB[外部卷 bbsmysql] -.->|挂载 /var/lib/mysql| DB_Flarum
+        Vol_WWW[外部卷 wwwdata] -.->|只读挂载 /flarum:ro| GoApp
         Vol_App[卷 appdata] -.->|挂载 /app/data| GoApp
     end
 ```
@@ -149,13 +158,14 @@ flowchart TD
 ### 运行特征说明
 1. **正式流量**：
    - `bbs.jnsec.org` 指向 Go 论坛，`JNSEC_READ_ONLY=false`，使用专用账号对 `flarum` 执行查询及业务写入。
-   - 旧站保留本机维护入口；`jnsec-legacy-private.service` 在 Docker 转发链阻断外部访问 8081，规则随开机加载。
+   - PHP 服务已在 Compose 中注释停用，Go 直接提供论坛页面、头像和附件。
    - Nginx 同时接受 `new.bbs.jnsec.org`，但切换验收时该域名未能解析，正式入口以 `bbs.jnsec.org` 为准。
 2. **数据与同步状态**：
    - Go 使用原 Flarum 表及显式迁移建立的 Go 辅助表；`bbs_v2` 的原生结构尚未接入在线 API。
    - `jnsec-bbs-sync.timer`、`jnsec-bbs-native-sync.timer` 均已禁用，对应服务已停止。共享模式无需同步，也不删除停用副本。
-3. **资源共享**：
-   - 共享 Docker 卷 `wwwdata`：PHP 容器挂载写入，Go 容器只读挂载至 `/flarum:ro`，旧头像与附件直接由 Go 容器的 `/assets` 路由透出，免除额外磁盘同步开销。
+3. **资源持久化**：
+   - `bbsmysql` 保存 MySQL 数据；Go 只读挂载 `wwwdata` 至 `/flarum:ro`，通过 `/assets` 提供历史头像和附件，资源读取不依赖 PHP 进程。
+   - `appdata` 挂载至 `/app/data`，保存 Go 新上传的头像和附件。旧 PHP 日志卷 `bbslog` 不再由当前 Compose 声明。
 
 ---
 

@@ -21,9 +21,8 @@ import (
 	"github.com/dchest/captcha"
 	"github.com/disintegration/imaging"
 	"github.com/exzco/bbs/internal/auth"
-	"github.com/exzco/bbs/internal/cache"
+	"github.com/exzco/bbs/internal/infra/cache"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/exzco/bbs/internal/store"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -377,7 +376,7 @@ type NotificationDTO struct {
 // Notifications 当前用户最近 50 条通知（仅可见讨论）与未读数。
 func (s *Service) Notifications(u *models.User) ([]NotificationDTO, int64) {
 	var notifs []models.Notification
-	s.db.Where("user_id = ? AND discussion_id IN (?)", u.ID, store.VisibleDiscussions(s.db, u).Select("flarum_discussions.id").Where("hidden_at IS NULL AND is_approved = ?", true)).
+	s.db.Where("user_id = ? AND discussion_id IN (?)", u.ID, visibleDiscussions(s.db, u).Select("flarum_discussions.id").Where("hidden_at IS NULL AND is_approved = ?", true)).
 		Preload("Sender").Preload("Discussion").
 		Order("created_at DESC").Limit(50).Find(&notifs)
 	items := make([]NotificationDTO, 0, len(notifs))

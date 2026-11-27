@@ -3,11 +3,11 @@ package service
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/exzco/bbs/internal/auth"
 	"github.com/exzco/bbs/internal/models"
-	"github.com/exzco/bbs/internal/store"
 )
 
 // loadPost 加载帖子并做可见性检查。
@@ -17,7 +17,7 @@ func (s *Service) loadPost(u *models.User, id uint) (*models.Post, *Error) {
 		return nil, Err(http.StatusNotFound, "该帖子不存在。")
 	}
 	var d models.Discussion
-	if err := store.VisibleDiscussions(s.db, u).Preload("Tags").First(&d, p.DiscussionID).Error; err != nil {
+	if err := visibleDiscussions(s.db, u).Preload("Tags").First(&d, p.DiscussionID).Error; err != nil {
 		return nil, Err(http.StatusNotFound, "该帖子不存在。")
 	}
 	s.FillTagPerms(d.Tags)
@@ -92,6 +92,9 @@ func (s *Service) PostEdit(u *models.User, postID uint) (PostEditData, *Error) {
 
 // EditPost 编辑回复内容（更新 edited 元数据并发送 @提及 通知）。
 func (s *Service) EditPost(u *models.User, postID uint, content string) (time.Time, *Error) {
+	if strings.TrimSpace(content) == "" {
+		return time.Time{}, Err(http.StatusBadRequest, "内容不能为空。")
+	}
 	p, err := s.loadPost(u, postID)
 	if err != nil {
 		return time.Time{}, err

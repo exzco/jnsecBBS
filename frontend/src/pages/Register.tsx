@@ -3,7 +3,7 @@ import { useMutation } from "@tanstack/react-query"
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router"
 import { RefreshCw } from "lucide-react"
 import { toast } from "sonner"
-import { api } from "@/lib/api"
+import { api, setCsrfToken } from "@/lib/api"
 import type { User } from "@/lib/types"
 import { useInvalidateSession, useSession } from "@/lib/session"
 import { Button } from "@/components/ui/button"
@@ -56,7 +56,7 @@ export default function RegisterPage() {
 
   const register = useMutation({
     mutationFn: () =>
-      api<{ user: User }>("/api/auth/register", {
+      api<{ user: User; csrfToken?: string }>("/api/auth/register", {
         json: {
           username: form.username,
           email: form.email,
@@ -67,7 +67,8 @@ export default function RegisterPage() {
           captchaValue: form.captchaValue,
         },
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      if (data.csrfToken) setCsrfToken(data.csrfToken)
       invalidate()
       toast.success("注册成功，欢迎加入！")
       navigate(safeFrom, { replace: true })

@@ -1,43 +1,53 @@
 # 新站 Go + React
-server {
-    listen 80;
-    server_name bbs.jnsec.org new.bbs.jnsec.org;
-    client_max_body_size 20m;
+    server {
+        listen 80;
+        server_name bbs.jnsec.org new.bbs.jnsec.org;
+        client_max_body_size 30m;
 
-    location ^~ /.well-known/acme-challenge/ {
-        root /var/www/letsencrypt;
-        default_type text/plain;
-        try_files $uri =404;
+        location ^~ /.well-known/acme-challenge/ {
+            root /var/www/letsencrypt;
+            default_type text/plain;
+            try_files $uri =404;
+        }
+
+        location / {
+            # 仅当客户端/Cloudflare 自身是 http（或直连源站 80）时才跳转；
+            # 若 Cloudflare 为 Flexible（浏览器走 https、回源走 80 并携带 X-Forwarded-Proto: https），
+            # 这里不会跳转，避免重定向死循环。
+            if ($http_x_forwarded_proto != "https") {
+                return 301 https://$host$request_uri;
+            }
+
+            proxy_pass http://127.0.0.1:8080;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            # 不要用 $scheme(http) 覆盖掉 Cloudflare 传来的 https
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+        }
     }
 
-    location / {
-        proxy_pass http://127.0.0.1:8080;   # 新站 go react
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+    server {
+        listen 443 ssl http2;
+        server_name bbs.jnsec.org new.bbs.jnsec.org;
+        client_max_body_size 30m;
+
+        ssl_certificate /etc/letsencrypt/live/jnsec-bbs/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/jnsec-bbs/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_session_cache shared:JNSECTLS:10m;
+        ssl_session_timeout 1d;
+
+        location / {
+            proxy_pass http://127.0.0.1:8080;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
     }
-}
-
-server {
-    listen 443 ssl http2;
-    server_name bbs.jnsec.org new.bbs.jnsec.org;
-    client_max_body_size 20m;
-
-    ssl_certificate /etc/letsencrypt/live/jnsec-bbs/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/jnsec-bbs/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_cache shared:JNSECTLS:10m;
-    ssl_session_timeout 1d;
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;   # 新站 go react
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
 
 # 旧站 PHP (已注释归档)
 # server {

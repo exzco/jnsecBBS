@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/exzco/bbs/internal/cache"
+	"github.com/exzco/bbs/internal/infra/cache"
 	"github.com/exzco/bbs/internal/models"
 	"gorm.io/gorm"
 )
 
-const SessionCookie = "jnsec_session"
+const (
+	SessionCookie = "jnsec_session"
+	SessionMaxAge = 60 * 60 * 24 * 30
+)
 
 // NewToken 生成随机 token（20 字节 = 40 个 hex 字符——必须 ≤ flarum_access_tokens.token
 // 的 varchar(40)，32 字节会触发 Data too long）。
@@ -44,7 +47,7 @@ func SetSessionCookie(w http.ResponseWriter, token string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name: SessionCookie, Value: token, Path: "/",
 		HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode,
-		MaxAge: 60 * 60 * 24 * 30,
+		MaxAge: SessionMaxAge,
 	})
 }
 

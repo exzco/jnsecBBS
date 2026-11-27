@@ -14,6 +14,12 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import type { User } from "@/lib/types"
 
+type PasswordInput = {
+  current: string
+  new: string
+  confirm: string
+}
+
 // 个人资料表单：子组件仅在 me 就绪后挂载，避免 useState 初值在会话
 // 加载完成前被固化为空（旧实现签名框总是空的）。
 function ProfileForm({ me, realName, blogUrl, readOnly }: { me: User; realName: string; blogUrl: string; readOnly: boolean }) {
@@ -168,14 +174,14 @@ export default function SettingsPage() {
   const me = session?.user
   const readOnly = !!session?.readOnly
   const fileRef = useRef<HTMLInputElement>(null)
-  const [pwd, setPwd] = useState({ current: "", next: "", confirm: "" })
+  const [pwd, setPwd] = useState<PasswordInput>({ current: "", new: "", confirm: "" })
   const [cropModalOpen, setCropModalOpen] = useState(false)
   const [cropImageSrc, setCropImageSrc] = useState<string | null>(null)
 
   const changePwd = useMutation({
-    mutationFn: (body: Record<string, unknown>) => api("/api/me/password", { json: body }),
+    mutationFn: (body: PasswordInput) => api<{ ok: boolean }>("/api/me/password", { json: body }),
     onSuccess: () => {
-      setPwd({ current: "", next: "", confirm: "" })
+      setPwd({ current: "", new: "", confirm: "" })
       toast.success("密码已修改，其他设备已退出登录")
     },
     onError: (e) => toast.error((e as Error).message),
@@ -308,8 +314,8 @@ export default function SettingsPage() {
             <Input
               id="next"
               type="password"
-              value={pwd.next}
-              onChange={(e) => setPwd({ ...pwd, next: e.target.value })}
+              value={pwd.new}
+              onChange={(e) => setPwd({ ...pwd, new: e.target.value })}
               minLength={8}
               autoComplete="new-password"
             />
@@ -328,7 +334,7 @@ export default function SettingsPage() {
           <div className="flex justify-end">
             <Button
               onClick={() => changePwd.mutate(pwd)}
-              disabled={changePwd.isPending || !pwd.current || !pwd.next}
+              disabled={changePwd.isPending || readOnly || !pwd.current || !pwd.new || !pwd.confirm}
             >
               修改密码
             </Button>

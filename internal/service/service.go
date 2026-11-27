@@ -1,5 +1,5 @@
 // Package service 承载论坛业务逻辑与事务编排（查询组装、权限判定、通知写入）。
-// 严禁依赖任何 Web 框架上下文：HTTP 绑定、参数提取与 JSON 输出由 api（handler）层负责。
+// 严禁依赖任何 Web 框架上下文：HTTP 绑定、参数提取与 JSON 输出由 handler 层负责。
 package service
 
 import (
@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/exzco/bbs/internal/auth"
-	"github.com/exzco/bbs/internal/cache"
 	"github.com/exzco/bbs/internal/config"
-	"github.com/exzco/bbs/internal/mail"
-	"github.com/exzco/bbs/internal/markdown"
+	"github.com/exzco/bbs/internal/content"
+	"github.com/exzco/bbs/internal/infra/cache"
+	"github.com/exzco/bbs/internal/infra/mail"
 	"github.com/exzco/bbs/internal/models"
 	"gorm.io/gorm"
 )
@@ -201,9 +201,9 @@ func notify(g *gorm.DB, userID, senderID uint, typ string, discussionID, postID 
 
 // notifyMentions 给正文 @提及 的用户发 mention 通知并返回被提及 ID 集
 // （MentionedUsernames 已去重且仅含正向解析名，此处再次解析走缓存；供调用方抑制对楼主的重复通知）。
-func (s *Service) notifyMentions(g *gorm.DB, content string, senderID, discussionID, postID uint) (map[uint]bool, error) {
+func (s *Service) notifyMentions(g *gorm.DB, source string, senderID, discussionID, postID uint) (map[uint]bool, error) {
 	mentioned := map[uint]bool{}
-	for _, name := range markdown.MentionedUsernames(content, s.mentionedUserID) {
+	for _, name := range content.MentionedUsernames(source, s.mentionedUserID) {
 		mid, ok := s.mentionedUserID(name)
 		if !ok || mid == senderID {
 			continue
@@ -441,7 +441,7 @@ func (s *Service) renderPostHTML(p *models.Post) string {
 			return e.html
 		}
 	}
-	html, _ := markdown.Render(p.Markdown(), s.mentionedUserID)
+	html, _ := content.Render(p.Markdown(), s.mentionedUserID)
 	s.renderCache.Store(p.ID, renderEntry{hash: h, html: html})
 	return html
 }

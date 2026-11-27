@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/exzco/bbs/internal/cache"
+	"github.com/exzco/bbs/internal/infra/cache"
 	"github.com/exzco/bbs/internal/models"
 	"gorm.io/gorm"
 )
