@@ -516,7 +516,6 @@ function DiscussionView({
       setReplyContent((cur) => (cur ? `${cur}\n${quote}` : quote))
     }
 
-    document.getElementById("reply-form")?.scrollIntoView({ behavior: "smooth" })
     setTimeout(() => {
       const ta = document.getElementById("reply-textarea") as HTMLTextAreaElement | null
       if (ta) {
@@ -524,7 +523,7 @@ function DiscussionView({
         const len = ta.value.length
         ta.setSelectionRange(len, len)
       }
-    }, 100)
+    }, 50)
   }
 
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -1010,14 +1009,58 @@ function DiscussionView({
         </div>
       )}
 
-      {data.canReply ? (
-        <div id="reply-form" className="mt-2 rounded-xl bg-muted/40 p-4">
-          <ReplyForm
-            value={replyContent}
-            onChange={setReplyContent}
-            onSubmit={(v) => reply.mutate(v)}
-            submitting={reply.isPending}
-          />
+      {(data.canReply || isWeeklyDiscussion) ? (
+        <div className="sticky bottom-0 z-20 -mx-1 sm:-mx-2 mt-4 flex flex-col gap-2">
+          {isWeeklyDiscussion && (
+            <div className="pointer-events-none flex justify-end px-2">
+              <div className="pointer-events-auto flex items-center gap-2">
+                {isFromStart && (
+                  <button
+                    type="button"
+                    onClick={handleBackToLatest}
+                    className="flex items-center gap-1.5 rounded-full border border-border/80 bg-background/95 px-3.5 py-2 text-xs font-semibold text-foreground shadow-lg backdrop-blur-sm transition-all hover:bg-muted hover:border-primary/50 active:scale-95 cursor-pointer"
+                    title="返回近期的最新周报"
+                  >
+                    <ArrowDownToLine className="size-3.5 text-primary" />
+                    <span>返回最新周报</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={isFromStart ? handleScrollToTop : handleSwitchToStart}
+                  disabled={isLoadingStart}
+                  className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-background/95 px-3.5 py-2 text-xs font-semibold text-primary shadow-lg backdrop-blur-sm transition-all hover:bg-primary hover:text-primary-foreground active:scale-95 cursor-pointer disabled:opacity-50"
+                  title={isFromStart ? "回到页面顶部" : "一键置顶并查询最开始的数据逐步向下滑动加载"}
+                >
+                  {isLoadingStart ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ArrowUpToLine className="size-3.5" />
+                  )}
+                  <span>一键置顶</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {data.canReply ? (
+            <div
+              id="reply-form"
+              className="max-h-[45dvh] overflow-y-auto rounded-t-xl border-t border-border/70 bg-background/95 px-2.5 py-2.5 sm:px-3.5 sm:py-3 shadow-[0_-6px_20px_-6px_rgba(0,0,0,0.08)] backdrop-blur-md"
+            >
+              <ReplyForm
+                value={replyContent}
+                onChange={setReplyContent}
+                onSubmit={(v) => reply.mutate(v)}
+                submitting={reply.isPending}
+              />
+            </div>
+          ) : (
+            <p className="border-t border-border/60 bg-background/95 py-3 text-center text-sm text-muted-foreground backdrop-blur-md">
+              {d.isLocked ? "该帖子已被锁定，无法回复。" : "登录后参与讨论。"}
+            </p>
+          )}
         </div>
       ) : (
         <p className="py-6 text-center text-sm text-muted-foreground">
@@ -1056,49 +1099,21 @@ function DiscussionView({
                 setReplyContent((cur) => (cur.trim() ? `${cur.trimEnd()}\n\n${quote}` : quote))
                 window.getSelection()?.removeAllRanges()
                 setSelectionQuote(null)
-                document.getElementById("reply-form")?.scrollIntoView({ behavior: "smooth" })
                 toast.success("已添加划线引用")
                 setTimeout(() => {
                   const ta = document.getElementById("reply-textarea") as HTMLTextAreaElement | null
-                  ta?.focus()
-                }, 100)
+                  if (ta) {
+                    ta.focus()
+                    const len = ta.value.length
+                    ta.setSelectionRange(len, len)
+                  }
+                }, 50)
               }
             }}
             className="flex items-center gap-1.5 rounded-full border border-border/80 bg-popover/95 px-3 py-1.5 text-xs font-semibold text-popover-foreground shadow-lg backdrop-blur-md transition hover:bg-accent hover:text-accent-foreground active:scale-95 cursor-pointer ring-1 ring-black/5 dark:ring-white/10"
           >
             <Quote className="size-3.5 text-primary" />
             <span>引用回复</span>
-          </button>
-        </div>
-      )}
-
-      {isWeeklyDiscussion && (
-        <div className="fixed bottom-6 right-6 z-30 flex items-center gap-2">
-          {isFromStart && (
-            <button
-              type="button"
-              onClick={handleBackToLatest}
-              className="flex items-center gap-1.5 rounded-full border border-border/80 bg-background/95 px-3.5 py-2 text-xs font-semibold text-foreground shadow-lg backdrop-blur-sm transition-all hover:bg-muted hover:border-primary/50 active:scale-95 cursor-pointer"
-              title="返回近期的最新周报"
-            >
-              <ArrowDownToLine className="size-3.5 text-primary" />
-              <span>返回最新周报</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={isFromStart ? handleScrollToTop : handleSwitchToStart}
-            disabled={isLoadingStart}
-            className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-background/95 px-3.5 py-2 text-xs font-semibold text-primary shadow-lg backdrop-blur-sm transition-all hover:bg-primary hover:text-primary-foreground active:scale-95 cursor-pointer disabled:opacity-50"
-            title={isFromStart ? "回到页面顶部" : "一键置顶并查询最开始的数据逐步向下滑动加载"}
-          >
-            {isLoadingStart ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <ArrowUpToLine className="size-3.5" />
-            )}
-            <span>一键置顶</span>
           </button>
         </div>
       )}
@@ -1415,7 +1430,7 @@ function ReplyForm({
         id="reply-textarea"
         value={value}
         onChange={onChange}
-        rows={5}
+        rows={3}
         placeholder="发表回复…（支持划线快捷引用、Markdown 与 LaTeX，@用户名 可提醒对方）"
       />
       <div className="mt-3 flex items-center justify-between">

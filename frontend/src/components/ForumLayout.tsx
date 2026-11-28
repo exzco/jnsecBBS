@@ -180,6 +180,8 @@ export function ForumLayout() {
         : "all"
     : ""
   const isAll = isHome && active === "all"
+  const isViewingDiscussion =
+    location.pathname.startsWith("/d/") || (isHome && Boolean(Number(searchParams.get("d"))))
 
   const activeCard = cards.find(
     (c) => c.tag.slug === active || c.children.some((x) => x.slug === active),
@@ -486,7 +488,10 @@ export function ForumLayout() {
           id="forum-content"
           ref={contentRef}
           aria-label="内容板块"
-          className="min-w-0 flex-1 h-full min-h-0 overflow-y-auto pr-1 sm:pr-2 pb-24 sm:pb-8 [scrollbar-gutter:stable] overscroll-contain"
+          className={cn(
+            "min-w-0 flex-1 h-full min-h-0 overflow-y-auto pr-1 sm:pr-2 [scrollbar-gutter:stable] overscroll-contain",
+            isViewingDiscussion ? "pb-0" : "pb-24 sm:pb-8",
+          )}
         >
           <Suspense fallback={<MiddleColumnSkeleton />}>
             <Outlet />
