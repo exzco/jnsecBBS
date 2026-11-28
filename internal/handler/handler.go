@@ -1,23 +1,23 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
-	"github.com/dchest/captcha"
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/models"
 	"github.com/exzco/bbs/internal/service"
+	"github.com/gorilla/csrf"
 	"github.com/labstack/echo/v4"
-	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 )
 
-const perPageUsers = 20
+const (
+	SessionCookie = "jnsec_session"
+	SessionMaxAge = 60 * 60 * 24 * 30
+	perPageUsers  = 20
+)
 
 // Server handler 层：请求绑定、参数提取与 JSON 输出；业务逻辑全部在 service。
 type Server struct {
@@ -30,336 +30,493 @@ func New(cfg *config.Config, g *gorm.DB) *Server {
 	return &Server{cfg: cfg, db: g, svc: service.New(cfg, g)}
 }
 
-// Register 挂载全部 API 路由。简单接口用闭包取参后直调 service，
-// 多步的（会话、上传、编辑）保留命名方法。
-// 注意：不在 /api 组上挂 requireUser——Echo 的 Group.Use 会为该组注册带
-// 中间件的 404 兜底，导致未匹配的 /api/* 请求被拦成 401 而非 404。
-func (s *Server) Register(e *echo.Echo) {
-	// 公开接口：会话、注册与管理（登录/登出不受只读拦截，见 readOnly）。
-	pub := e.Group("/api", noStore(), s.readOnly())
-	pub.GET("/me", s.h(s.me))
-	pub.GET("/auth/captcha", s.h(func(c echo.Context) (any, *service.Error) { return echo.Map{"id": captcha.New()}, nil }))
-	pub.POST("/auth/login", s.h(s.login), s.limitWith(authLimiter))
-	pub.POST("/auth/register", s.h(s.register), s.limitWith(authLimiter))
-	pub.POST("/auth/logout", s.h(s.logout))
+func (s *Server) Svc() *service.Service { return s.svc }
 
-	// 内容类接口全部要求登录（内部论坛：所有内容请登录后查看）；
-	// 未登录仅开放会话与注册相关接口。
-	pub.POST("/me/profile", s.ha(s.updateProfile))
-	pub.POST("/me/password", s.ha(s.updatePassword))
-	pub.POST("/me/avatar", s.ha(s.updateAvatar))
-	pub.POST("/me/email", s.ha(s.updateEmail))
-	pub.POST("/me/email/unbind", s.ha(func(c echo.Context) (any, *service.Error) {
-		if err := s.svc.UnbindEmail(s.currentUser(c)); err != nil {
-			return nil, err
-		}
-		return echo.Map{"ok": true}, nil
-	}))
-	pub.GET("/me/notifications", s.ha(func(c echo.Context) (any, *service.Error) {
-		items, unread := s.svc.Notifications(s.currentUser(c))
-		return echo.Map{"items": items, "unread": unread}, nil
-	}))
-	pub.POST("/me/notifications/read", s.ha(func(c echo.Context) (any, *service.Error) {
-		if err := s.svc.MarkNotificationsRead(s.currentUser(c)); err != nil {
-			return nil, service.Err(http.StatusInternalServerError, "操作失败，请重试。")
-		}
-		return echo.Map{"ok": true}, nil
-	}))
-	pub.GET("/home", s.ha(func(c echo.Context) (any, *service.Error) {
-		return echo.Map{"cards": s.svc.Home(s.currentUser(c))}, nil
-	}))
-	pub.GET("/recent", s.ha(s.recent))
-	pub.GET("/groups", s.ha(func(c echo.Context) (any, *service.Error) { return echo.Map{"groups": s.svc.ListGroups()}, nil }))
-	pub.GET("/tags/:slug", s.ha(func(c echo.Context) (any, *service.Error) { return s.svc.TagDetail(s.currentUser(c), c.Param("slug")) }))
-	pub.GET("/tags/:slug/discussions", s.ha(func(c echo.Context) (any, *service.Error) {
-		return s.svc.TagDiscussions(s.currentUser(c), c.Param("slug"), pageParam(c), c.QueryParam("all") == "1")
-	}))
-	pub.GET("/post-form", s.ha(func(c echo.Context) (any, *service.Error) {
-		return echo.Map{"groups": s.svc.PostForm(s.currentUser(c))}, nil
-	}))
-	pub.POST("/preview", s.ha(s.preview))
-	pub.POST("/upload", s.ha(s.upload))
-	pub.GET("/fof/download/:uuid", s.ha(s.downloadFile))
-	pub.HEAD("/fof/download/:uuid", s.ha(s.downloadFile))
-	pub.GET("/search", s.ha(s.search))
-	pub.GET("/users/:username", s.ha(func(c echo.Context) (any, *service.Error) {
-		return s.svc.Profile(s.currentUser(c), c.Param("username"))
-	}))
-	pub.GET("/users/:username/activity", s.ha(s.userActivity))
+func setSessionCookie(w http.ResponseWriter, tok string, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name: SessionCookie, Value: tok, Path: "/",
+		HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode,
+		MaxAge: SessionMaxAge,
+	})
+}
 
-	d := pub.Group("/discussions")
-	d.GET("/:id", s.ha(s.discussionDetail))
-	d.POST("", s.ha(s.createDiscussion), s.limitWith(postLimiter))
-	d.POST("/:id/reply", s.ha(s.reply), s.limitWith(postLimiter))
-	d.POST("/:id/read-progress", s.ha(s.saveReadProgress))
-	d.POST("/:id/mod", s.ha(s.moderate))
-	p := pub.Group("/posts")
-	p.GET("/:id/edit", s.ha(s.postEditGet))
-	p.POST("/:id/edit", s.ha(s.editPost))
-	p.POST("/:id/hide", s.ha(s.hidePost))
-	p.POST("/:id/like", s.ha(s.toggleLike))
+func clearSessionCookie(w http.ResponseWriter, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name: SessionCookie, Value: "", Path: "/",
+		HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: -1,
+	})
+}
 
-	pub.GET("/admin/meta", s.h(func(c echo.Context) (any, *service.Error) { return s.svc.AdminMeta(), nil }), s.requireAdmin())
-	pub.GET("/admin/tags", s.h(func(c echo.Context) (any, *service.Error) { return echo.Map{"nodes": s.svc.AdminTags()}, nil }), s.requireAdmin())
-	pub.POST("/admin/tags", s.h(func(c echo.Context) (any, *service.Error) {
-		body, err := bindJSON[service.TagInput](c)
-		if err != nil {
-			return nil, err
-		}
-		return echo.Map{"ok": true}, s.svc.SaveTag(*body)
-	}), s.requireAdmin())
-	pub.POST("/admin/tags/:id/delete", s.h(func(c echo.Context) (any, *service.Error) {
-		id, _ := parseUint(c.Param("id"))
-		return echo.Map{"ok": true}, s.svc.DeleteTag(id)
-	}), s.requireAdmin())
-	pub.GET("/admin/users", s.h(func(c echo.Context) (any, *service.Error) {
-		pp := perPageUsers
-		if n, err := strconv.Atoi(c.QueryParam("per_page")); err == nil && n > 0 && n <= 1000 {
-			pp = n
-		}
-		rows, page := s.svc.AdminUsers(
-			strings.TrimSpace(c.QueryParam("q")), pageParam(c), pp,
-			c.QueryParam("all") == "1" || c.QueryParam("all") == "true", c.QueryParam("sort") == "desc" || c.QueryParam("order") == "desc")
-		return echo.Map{"users": rows, "page": page}, nil
-	}), s.requireAdmin())
-	pub.POST("/admin/users/:id", s.h(func(c echo.Context) (any, *service.Error) {
-		body, err := bindJSON[struct {
-			Action string `json:"action"`
-			Groups []uint `json:"groups"`
-		}](c)
-		if err != nil {
-			return nil, err
-		}
-		id, _ := parseUint(c.Param("id"))
-		user, ids, serr := s.svc.AdminUserSave(s.currentUser(c), id, body.Action, body.Groups)
+func parsePage(c echo.Context) int {
+	page, _ := strconv.Atoi(c.QueryParam("page"))
+	if page < 1 {
+		return 1
+	}
+	return page
+}
+
+func parseID(raw string) uint {
+	v, _ := strconv.ParseUint(raw, 10, 32)
+	return uint(v)
+}
+
+func sessionUser(c echo.Context) *models.User {
+	u, _ := c.Get("user").(*models.User)
+	if u != nil && u.IsBanned() {
+		return nil
+	}
+	return u
+}
+
+// ---------- 健康检查与认证 ----------
+
+func (s *Server) Health(c echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "no-store")
+	if !s.svc.Health(c.Request().Context()) {
+		return c.JSON(http.StatusServiceUnavailable, echo.Map{"status": "unavailable"})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"status": "ok"})
+}
+
+func (s *Server) Me(c echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "no-store")
+	resp := s.svc.Me(sessionUser(c))
+	resp["csrfToken"] = csrf.Token(c.Request())
+	return c.JSON(http.StatusOK, resp)
+}
+
+func (s *Server) Captcha(c echo.Context) error {
+	return c.JSON(http.StatusOK, echo.Map{"id": s.svc.NewCaptcha()})
+}
+
+func (s *Server) Login(c echo.Context) error {
+	var body models.LoginInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	u, serr := s.svc.Login(body.Username, body.Password)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return s.startSession(c, u)
+}
+
+func (s *Server) Register(c echo.Context) error {
+	var body models.RegisterInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	u, serr := s.svc.Register(body)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return s.startSession(c, u)
+}
+
+func (s *Server) startSession(c echo.Context, u *models.User) error {
+	c.Response().Header().Set("Cache-Control", "no-store")
+	tok, user, unread, serr := s.svc.StartSession(u)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	setSessionCookie(c.Response(), tok, s.cfg.CookieSecure)
+	return c.JSON(http.StatusOK, echo.Map{"user": user, "unread": unread, "csrfToken": csrf.Token(c.Request())})
+}
+
+func (s *Server) Logout(c echo.Context) error {
+	tok, _ := c.Get("token").(string)
+	s.svc.DestroySession(tok)
+	clearSessionCookie(c.Response(), s.cfg.CookieSecure)
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
+}
+
+// ---------- 个人设置与通知 ----------
+
+func (s *Server) UpdateProfile(c echo.Context) error {
+	var body models.ProfileInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	user, realName, blogURL, serr := s.svc.UpdateProfile(sessionUser(c), body)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"user": user, "realName": realName, "blogUrl": blogURL})
+}
+
+func (s *Server) UpdatePassword(c echo.Context) error {
+	var body models.PasswordInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	tok, _ := c.Get("token").(string)
+	if serr := s.svc.UpdatePassword(sessionUser(c), body, tok); serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
+}
+
+func (s *Server) UpdateAvatar(c echo.Context) error {
+	u := sessionUser(c)
+	if c.FormValue("action") == "remove" {
+		avatar, serr := s.svc.RemoveAvatar(u)
 		if serr != nil {
-			return nil, serr
+			return c.JSON(serr.Status, echo.Map{"error": serr.Message})
 		}
-		return echo.Map{"ok": true, "user": user, "groupIds": ids}, nil
-	}), s.requireAdmin())
-	pub.GET("/admin/invites", s.h(func(c echo.Context) (any, *service.Error) { return echo.Map{"invites": s.svc.ListInvites()}, nil }), s.requireAdmin())
-	pub.POST("/admin/invites", s.h(func(c echo.Context) (any, *service.Error) {
-		body, err := bindJSON[struct {
-			Count       int `json:"count"`
-			ExpiresDays int `json:"expiresDays"`
-		}](c)
-		if err != nil {
-			return nil, err
-		}
-		codes, serr := s.svc.CreateInvites(s.currentUser(c), body.Count, body.ExpiresDays)
-		if serr != nil {
-			return nil, serr
-		}
-		return echo.Map{"codes": codes}, nil
-	}), s.requireAdmin())
-	pub.GET("/admin/hidden", s.h(func(c echo.Context) (any, *service.Error) {
-		return echo.Map{"items": s.svc.AdminHidden(s.currentUser(c))}, nil
-	}), s.requireAdmin())
-	pub.POST("/admin/discussions/:id/restore", s.h(func(c echo.Context) (any, *service.Error) {
-		id, _ := parseUint(c.Param("id"))
-		if err := s.svc.AdminRestore(id); err != nil {
-			return nil, service.Err(http.StatusInternalServerError, "恢复失败，请重试。")
-		}
-		return echo.Map{"ok": true}, nil
-	}), s.requireAdmin())
-	pub.GET("/admin/settings", s.h(func(c echo.Context) (any, *service.Error) {
-		return echo.Map{
-			"siteName":     s.svc.SettingValue(models.SettingKeySiteName),
-			"registration": s.svc.SettingValue(models.SettingKeyRegistration),
-			"welcomeText":  s.svc.SettingValue(models.SettingKeyWelcomeText),
-		}, nil
-	}), s.requireAdmin())
-	pub.POST("/admin/settings", s.h(func(c echo.Context) (any, *service.Error) {
-		body, err := bindJSON[service.SettingsInput](c)
-		if err != nil {
-			return nil, err
-		}
-		return echo.Map{"ok": true}, s.svc.SaveSettings(*body)
-	}), s.requireAdmin())
-}
-
-// ---------- 通用辅助 ----------
-
-// h 统一适配：业务函数返回 (数据, *service.Error)，错误映射为对应状态码 JSON。
-// 文件下载等已直接写出响应的 handler 通过 Response.Committed 跳过 JSON 输出。
-func (s *Server) h(fn func(c echo.Context) (any, *service.Error)) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		res, err := fn(c)
-		if err != nil {
-			return fail(c, err.Status, err.Message)
-		}
-		if c.Response().Committed {
-			return nil
-		}
-		return c.JSON(http.StatusOK, res)
+		return c.JSON(http.StatusOK, echo.Map{"avatar": avatar})
 	}
-}
-
-// ha 登录后接口适配：requireUser + h。
-func (s *Server) ha(fn func(c echo.Context) (any, *service.Error)) echo.HandlerFunc {
-	return s.requireUser()(s.h(fn))
-}
-
-// bindJSON 解析 JSON 请求体（与 gin ShouldBindJSON 语义一致：不做 Content-Type 协商）；
-// 空 body 解析为零值结构（如生成邀请码可不带 body）。解析失败统一 400。
-func bindJSON[T any](c echo.Context) (*T, *service.Error) {
-	var v T
-	if c.Request().Body == nil || c.Request().ContentLength == 0 {
-		return &v, nil
+	fh, err := c.FormFile("file")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请选择头像文件。"})
 	}
-	if err := json.NewDecoder(c.Request().Body).Decode(&v); err != nil {
-		return nil, service.Err(http.StatusBadRequest, "请求格式错误。")
+	f, err := fh.Open()
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "读取文件失败。"})
 	}
-	return &v, nil
-}
-
-func fail(c echo.Context, code int, msg string) error {
-	return c.JSON(code, echo.Map{"error": msg})
-}
-
-func pageParam(c echo.Context) int {
-	p, _ := strconv.Atoi(c.QueryParam("page"))
-	if p < 1 {
-		p = 1
+	defer f.Close()
+	avatar, serr := s.svc.SaveAvatar(u, fh.Size, f)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
 	}
-	return p
+	return c.JSON(http.StatusOK, echo.Map{"avatar": avatar})
 }
 
-func parseUint(s string) (uint, error) {
-	v, err := strconv.ParseUint(s, 10, 32)
-	return uint(v), err
+func (s *Server) UpdateEmail(c echo.Context) error {
+	var body models.EmailInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	if serr := s.svc.UpdateEmail(sessionUser(c), body); serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
 }
 
-func (s *Server) currentUser(c echo.Context) *models.User {
-	if u, ok := c.Get("user").(*models.User); ok && u != nil && !u.IsBanned() {
-		return u
+func (s *Server) UnbindEmail(c echo.Context) error {
+	if serr := s.svc.UnbindEmail(sessionUser(c)); serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
+}
+
+func (s *Server) Notifications(c echo.Context) error {
+	items, unread := s.svc.Notifications(sessionUser(c))
+	return c.JSON(http.StatusOK, echo.Map{"items": items, "unread": unread})
+}
+
+func (s *Server) MarkNotificationsRead(c echo.Context) error {
+	if err := s.svc.MarkNotificationsRead(sessionUser(c)); err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "操作失败，请重试。"})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
+}
+
+// ---------- 首页 / 版块 / 用户主页 / 讨论 ----------
+
+func (s *Server) Home(c echo.Context) error {
+	return c.JSON(http.StatusOK, echo.Map{"cards": s.svc.Home(sessionUser(c))})
+}
+
+func (s *Server) Recent(c echo.Context) error {
+	return c.JSON(http.StatusOK, s.svc.Recent(sessionUser(c), service.RecentQuery{
+		Sidebar:      c.QueryParam("sidebar") == "1",
+		StickyFirst:  c.QueryParam("sticky") != "0",
+		ExcludeSlugs: strings.Split(c.QueryParam("exclude"), ","),
+		Page:         parsePage(c),
+	}))
+}
+
+func (s *Server) ListGroups(c echo.Context) error {
+	return c.JSON(http.StatusOK, echo.Map{"groups": s.svc.ListGroups()})
+}
+
+func (s *Server) TagDetail(c echo.Context) error {
+	res, serr := s.svc.TagDetail(sessionUser(c), c.Param("slug"))
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) TagDiscussions(c echo.Context) error {
+	res, serr := s.svc.TagDiscussions(sessionUser(c), c.Param("slug"), parsePage(c), c.QueryParam("all") == "1")
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) PostForm(c echo.Context) error {
+	return c.JSON(http.StatusOK, echo.Map{"groups": s.svc.PostForm(sessionUser(c))})
+}
+
+func (s *Server) Profile(c echo.Context) error {
+	res, serr := s.svc.Profile(sessionUser(c), c.Param("username"))
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) UserActivity(c echo.Context) error {
+	year := int(parseID(c.QueryParam("year")))
+	res, serr := s.svc.UserActivity(sessionUser(c), c.Param("username"), year)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) Preview(c echo.Context) error {
+	var body models.ContentInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"html": s.svc.Preview(body.Content)})
+}
+
+func (s *Server) DiscussionDetail(c echo.Context) error {
+	id := parseID(c.Param("id"))
+	if id == 0 {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "该帖子不存在。"})
+	}
+	beforeNumber, _ := strconv.Atoi(c.QueryParam("before_number"))
+	pp, _ := strconv.Atoi(c.QueryParam("per_page"))
+	res, serr := s.svc.DiscussionDetail(sessionUser(c), id, service.DetailQuery{
+		BeforeNumber: beforeNumber,
+		PerPage:      pp,
+		Page:         parsePage(c),
+		HasPage:      c.QueryParam("page") != "",
+		FromStart:    c.QueryParam("from_start") == "1" || c.QueryParam("from_start") == "true",
+		LoadAll:      c.QueryParam("all") == "1" || c.QueryParam("all") == "true",
+		ViewerIP:     c.RealIP(),
+	})
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) SaveReadProgress(c echo.Context) error {
+	id := parseID(c.Param("id"))
+	if id == 0 {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "该帖子不存在。"})
+	}
+	var body models.ReadProgressInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	res, serr := s.svc.SaveReadPosition(sessionUser(c), id, body.PostID, body.PostNumber)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) CreateDiscussion(c echo.Context) error {
+	var body models.CreateDiscussionInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	res, serr := s.svc.CreateDiscussion(sessionUser(c), body.Title, body.Content, body.TagIDs)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) Reply(c echo.Context) error {
+	var body models.ContentInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "回复内容不能为空。"})
+	}
+	res, serr := s.svc.Reply(sessionUser(c), parseID(c.Param("id")), body.Content)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) Moderate(c echo.Context) error {
+	var body models.ModerateInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	if serr := s.svc.Moderate(sessionUser(c), parseID(c.Param("id")), body.Action, body.Title, body.TagIDs); serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
+}
+
+func (s *Server) PostEditGet(c echo.Context) error {
+	res, serr := s.svc.PostEdit(sessionUser(c), parseID(c.Param("id")))
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) EditPost(c echo.Context) error {
+	var body models.ContentInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "内容不能为空。"})
+	}
+	editedAt, serr := s.svc.EditPost(sessionUser(c), parseID(c.Param("id")), body.Content)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true, "editedAt": editedAt})
+}
+
+func (s *Server) DeleteDiscussion(c echo.Context) error {
+	id := parseID(c.Param("id"))
+	if id == 0 {
+		return c.JSON(http.StatusNotFound, echo.Map{"error": "该帖子不存在。"})
+	}
+	if serr := s.svc.DeleteDiscussion(sessionUser(c), id); serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
+}
+
+func (s *Server) ToggleLike(c echo.Context) error {
+	res, serr := s.svc.ToggleLike(sessionUser(c), parseID(c.Param("id")))
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) Search(c echo.Context) error {
+	res := s.svc.Search(sessionUser(c), c.QueryParam("q"))
+	data := echo.Map{"q": res.Q}
+	if res.Found {
+		data["discussions"], data["posts"] = res.Discussions, res.Posts
+	}
+	return c.JSON(http.StatusOK, data)
+}
+
+// ---------- 附件上传 / 下载（multipart 与文件伺服为传输层职责） ----------
+
+func (s *Server) Upload(c echo.Context) error {
+	fh, err := c.FormFile("file")
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请选择要上传的文件。"})
+	}
+	f, err := fh.Open()
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "读取文件失败。"})
+	}
+	defer f.Close()
+	res, serr := s.svc.SaveUpload(sessionUser(c), fh.Filename, fh.Header.Get("Content-Type"), fh.Size, f)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+func (s *Server) DownloadFile(c echo.Context) error {
+	path, name, serr := s.svc.DownloadUpload(c.Param("uuid"))
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	if err := c.Attachment(path, name); err != nil && !c.Response().Committed {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "文件读取失败。"})
 	}
 	return nil
 }
 
-// token 当前会话 token（未登录为空）。
-func token(c echo.Context) string {
-	t, _ := c.Get("token").(string)
-	return t
+// ---------- 管理后台 ----------
+
+func (s *Server) AdminMeta(c echo.Context) error {
+	return c.JSON(http.StatusOK, s.svc.AdminMeta())
 }
 
-// ---------- 中间件 ----------
-
-// readOnlySafeMethods / readOnlyFreePaths 只读模式放行集：无副作用方法与登录、登出。
-var readOnlySafeMethods = map[string]bool{
-	http.MethodGet: true, http.MethodHead: true, http.MethodOptions: true,
+func (s *Server) AdminTags(c echo.Context) error {
+	return c.JSON(http.StatusOK, echo.Map{"nodes": s.svc.AdminTags()})
 }
 
-var readOnlyFreePaths = map[string]bool{
-	"/api/auth/login": true, "/api/auth/logout": true,
-}
-
-// noStore 禁止浏览器或 CDN 缓存 API 响应（防止 /api/me 等携带的 csrfToken 与会话被缓存错配）。
-func noStore() echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			c.Response().Header().Set("Cache-Control", "no-store")
-			return next(c)
-		}
+func (s *Server) AdminSaveTag(c echo.Context) error {
+	var body models.TagInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
 	}
-}
-
-// readOnly 迁移期只读拦截。
-func (s *Server) readOnly() echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			if s.cfg.ReadOnly && !readOnlySafeMethods[c.Request().Method] && !readOnlyFreePaths[c.Request().URL.Path] {
-				return c.JSON(http.StatusForbidden, echo.Map{"error": "迁移期间新站只读，请前往旧站进行修改。", "code": "read_only"})
-			}
-			return next(c)
-		}
+	if serr := s.svc.SaveTag(body); serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
 	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
 }
 
-func (s *Server) requireUser() echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			if s.currentUser(c) == nil {
-				return fail(c, http.StatusUnauthorized, "请先登录。")
-			}
-			return next(c)
-		}
+func (s *Server) AdminDeleteTag(c echo.Context) error {
+	if serr := s.svc.DeleteTag(parseID(c.Param("id"))); serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
 	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
 }
 
-func (s *Server) requireAdmin() echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			u := s.currentUser(c)
-			if u == nil {
-				return fail(c, http.StatusUnauthorized, "请先登录。")
-			}
-			if !u.IsAdmin() {
-				return fail(c, http.StatusForbidden, "需要管理员权限。")
-			}
-			return next(c)
-		}
+func (s *Server) AdminUsers(c echo.Context) error {
+	pp := perPageUsers
+	if n, err := strconv.Atoi(c.QueryParam("per_page")); err == nil && n > 0 && n <= 1000 {
+		pp = n
 	}
+	rows, pageRes := s.svc.AdminUsers(
+		strings.TrimSpace(c.QueryParam("q")), parsePage(c), pp,
+		c.QueryParam("all") == "1" || c.QueryParam("all") == "true",
+		c.QueryParam("sort") == "desc" || c.QueryParam("order") == "desc",
+	)
+	return c.JSON(http.StatusOK, echo.Map{"users": rows, "page": pageRes})
 }
 
-// ---------- 限速（按 IP + 路由类别） ----------
-
-type rateLimiter struct {
-	mu       sync.Mutex
-	visitors map[string]*entry
-	perMin   int
-	burst    int
-	sweepAt  time.Time
-}
-
-type entry struct {
-	lim  *rate.Limiter
-	last time.Time
-}
-
-func newRateLimiter(perMinute, burst int) *rateLimiter {
-	return &rateLimiter{
-		visitors: map[string]*entry{},
-		perMin:   perMinute,
-		burst:    burst,
-		sweepAt:  time.Now().Add(10 * time.Minute),
+func (s *Server) AdminUserSave(c echo.Context) error {
+	var body models.AdminUserInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
 	}
+	user, ids, serr := s.svc.AdminUserSave(sessionUser(c), parseID(c.Param("id")), body.Action, body.Groups)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true, "user": user, "groupIds": ids})
 }
 
-func (rl *rateLimiter) allow(ip string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	// 到期顺带清理 1 小时未活跃的 IP，无需常驻清理协程。
-	now := time.Now()
-	if now.After(rl.sweepAt) {
-		for k, v := range rl.visitors {
-			if now.Sub(v.last) > time.Hour {
-				delete(rl.visitors, k)
-			}
-		}
-		rl.sweepAt = now.Add(10 * time.Minute)
-	}
-	e, ok := rl.visitors[ip]
-	if !ok {
-		e = &entry{lim: rate.NewLimiter(rate.Every(time.Minute/time.Duration(rl.perMin)), rl.burst)}
-		rl.visitors[ip] = e
-	}
-	e.last = now
-	return e.lim.Allow()
+func (s *Server) AdminListInvites(c echo.Context) error {
+	return c.JSON(http.StatusOK, echo.Map{"invites": s.svc.ListInvites()})
 }
 
-var (
-	authLimiter = newRateLimiter(10, 10)
-	postLimiter = newRateLimiter(30, 30)
-)
-
-func (s *Server) limitWith(rl *rateLimiter) echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			if !rl.allow(c.RealIP()) {
-				return fail(c, http.StatusTooManyRequests, "操作过于频繁，请稍后再试。")
-			}
-			return next(c)
-		}
+func (s *Server) AdminCreateInvites(c echo.Context) error {
+	var body models.CreateInvitesInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
 	}
+	codes, serr := s.svc.CreateInvites(sessionUser(c), body.Count, body.ExpiresDays)
+	if serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"codes": codes})
+}
+
+func (s *Server) AdminHidden(c echo.Context) error {
+	return c.JSON(http.StatusOK, echo.Map{"items": s.svc.AdminHidden(sessionUser(c))})
+}
+
+func (s *Server) AdminRestore(c echo.Context) error {
+	if err := s.svc.AdminRestore(parseID(c.Param("id"))); err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"error": "恢复失败，请重试。"})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
+}
+
+func (s *Server) AdminSettings(c echo.Context) error {
+	return c.JSON(http.StatusOK, s.svc.AdminSettings())
+}
+
+func (s *Server) AdminSaveSettings(c echo.Context) error {
+	var body models.SettingsInput
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, echo.Map{"error": "请求格式错误。"})
+	}
+	if serr := s.svc.SaveSettings(body); serr != nil {
+		return c.JSON(serr.Status, echo.Map{"error": serr.Message})
+	}
+	return c.JSON(http.StatusOK, echo.Map{"ok": true})
 }

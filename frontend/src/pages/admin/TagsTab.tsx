@@ -10,7 +10,6 @@ import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 
 export function TagsTab({ meta }: { meta?: AdminMeta }) {
@@ -110,7 +109,7 @@ function TagEditForm({
   meta, initial, onSubmit,
 }: {
   meta?: AdminMeta
-  initial?: { id?: number; tag: Tag; viewIds: number[]; postIds: number[] }
+  initial?: { id?: number; tag: Tag }
   onSubmit: (body: Record<string, unknown>) => void
 }) {
   const editing = !!initial?.id
@@ -123,12 +122,6 @@ function TagEditForm({
     parentId: "0",
     description: t?.description ?? "",
   })
-  const [viewIds, setViewIds] = useState<number[]>(initial?.viewIds ?? [])
-  const [postIds, setPostIds] = useState<number[]>(initial?.postIds ?? [])
-
-  function toggle(list: number[], setList: (v: number[]) => void, id: number) {
-    setList(list.includes(id) ? list.filter((x) => x !== id) : [...list, id])
-  }
 
   return (
     <form
@@ -143,8 +136,6 @@ function TagEditForm({
           position: Number(form.position) || 0,
           parentId: Number(form.parentId) || 0,
           description: form.description,
-          viewGroups: viewIds.join(","),
-          postGroups: postIds.join(","),
         })
       }}
     >
@@ -188,31 +179,6 @@ function TagEditForm({
           <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
         </div>
       </div>
-      {(["viewGroups", "postGroups"] as const).map((field) => {
-        const list = field === "viewGroups" ? viewIds : postIds
-        const setList = field === "viewGroups" ? setViewIds : setPostIds
-        return (
-          <div key={field}>
-            <Label>{field === "viewGroups" ? "谁可以看" : "谁可以发帖"}</Label>
-            <div className="mt-1.5 flex flex-wrap gap-3">
-              {meta?.groups
-                .filter((g) => g.id !== 2)
-                .map((g) => (
-                  <label key={g.id} className="flex items-center gap-1.5 text-sm">
-                    <Switch
-                      checked={list.includes(g.id)}
-                      onCheckedChange={() => toggle(list, setList, g.id)}
-                    />
-                    {g.name}
-                  </label>
-                ))}
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {field === "viewGroups" ? "不勾选 = 任何人（含游客）可见" : "不勾选 = 任何登录用户"}
-            </p>
-          </div>
-        )
-      })}
       <div className="flex justify-end">
         <Button type="submit">
           <Plus className="size-4" /> {editing ? "保存" : "创建版块"}

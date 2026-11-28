@@ -1,4 +1,4 @@
-// 帖子（楼层）级操作：编辑、隐藏、点赞。
+// 帖子（楼层）级操作：编辑、点赞与正文渲染。
 package service
 
 import (
@@ -6,32 +6,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/exzco/bbs/internal/auth"
 	"github.com/exzco/bbs/internal/models"
+	"github.com/exzco/bbs/internal/util"
 )
 
-// loadPost 加载帖子并做可见性检查。
-func (s *Service) loadPost(u *models.User, id uint) (*models.Post, *Error) {
+// canEditPost 仅帖子作者本人或版主可编辑。
+func canEditPost(u *models.User, p *models.Post) bool {
+	if u == nil {
+		return false
+	}
+	return u.IsModerator() || (p.UserID != nil && *p.UserID == u.ID)
+}
+
+// loadPost 加载评论帖子。
+func (s *Service) loadPost(id uint) (*models.Post, *Error) {
 	var p models.Post
 	if err := s.db.First(&p, id).Error; err != nil {
 		return nil, Err(http.StatusNotFound, "该帖子不存在。")
 	}
-	var d models.Discussion
-	if err := visibleDiscussions(s.db, u).Preload("Tags").First(&d, p.DiscussionID).Error; err != nil {
-		return nil, Err(http.StatusNotFound, "该帖子不存在。")
-	}
-	s.FillTagPerms(d.Tags)
-	for _, t := range d.Tags {
-		if !auth.CanViewTag(u, &t) {
-			return nil, Err(http.StatusForbidden, "你没有查看该帖子的权限。")
-		}
-	}
-	isMod := u.IsModerator()
-	isAuthor := p.UserID != nil && *p.UserID == u.ID
-	if d.HiddenAt != nil && !isMod && !isAuthor {
-		return nil, Err(http.StatusNotFound, "该帖子不存在或已被删除。")
-	}
-	if p.IsPrivate || p.Type != "comment" || (!p.IsApproved && !isMod) {
+	if p.Type != "comment" {
 		return nil, Err(http.StatusNotFound, "该帖子不存在。")
 	}
 	return &p, nil
@@ -54,20 +47,20 @@ type PostEditData struct {
 
 // PostEdit 编辑页：定位回复所在评论页（按评论位置而非楼层号）。
 func (s *Service) PostEdit(u *models.User, postID uint) (PostEditData, *Error) {
-	p, err := s.loadPost(u, postID)
+	p, err := s.loadPost(postID)
 	if err != nil {
 		return PostEditData{}, err
 	}
-	if !auth.CanEditPost(u, p) {
+	if !canEditPost(u, p) {
 		return PostEditData{}, Err(http.StatusForbidden, "你只能编辑自己的回复。")
 	}
 	var d models.Discussion
 	if err := s.db.Select("id, slug, title").First(&d, p.DiscussionID).Error; err != nil {
 		return PostEditData{}, Err(http.StatusInternalServerError, "加载失败，请重试。")
 	}
-	// 楼层号包含系统事件和已移除的回复，不能直接用楼层号推算分页。
+	// 楼层号包含系统事件等非评论行，不能直接用楼层号推算分页。
 	var position int64
-	query := visibleComments(s.db, u, d.ID)
+	query := s.db.Model(&models.Post{}).Where("discussion_id = ? AND type = ?", d.ID, "comment")
 	if p.Number != nil {
 		query = query.Where("number <= ? OR number IS NULL", *p.Number)
 	} else {
@@ -95,17 +88,16 @@ func (s *Service) EditPost(u *models.User, postID uint, content string) (time.Ti
 	if strings.TrimSpace(content) == "" {
 		return time.Time{}, Err(http.StatusBadRequest, "内容不能为空。")
 	}
-	p, err := s.loadPost(u, postID)
+	p, err := s.loadPost(postID)
 	if err != nil {
 		return time.Time{}, err
 	}
-	if !auth.CanEditPost(u, p) {
+	if !canEditPost(u, p) {
 		return time.Time{}, Err(http.StatusForbidden, "你只能编辑自己的回复。")
 	}
 	now := time.Now()
-	edited := now
 	p.SetMarkdown(content)
-	if err := s.db.Model(p).Updates(map[string]any{"edited_at": edited, "edited_user_id": u.ID, "content": p.Content}).Error; err != nil {
+	if err := s.db.Model(p).Updates(map[string]any{"edited_at": now, "edited_user_id": u.ID, "content": p.Content}).Error; err != nil {
 		return time.Time{}, Err(http.StatusInternalServerError, "保存失败，请重试。")
 	}
 	authorID := uint(0)
@@ -113,40 +105,7 @@ func (s *Service) EditPost(u *models.User, postID uint, content string) (time.Ti
 		authorID = *p.UserID
 	}
 	s.notifyMentions(s.db, content, authorID, p.DiscussionID, p.ID)
-	return edited, nil
-}
-
-// HidePost 隐藏/恢复回复；主楼隐藏状态同步到讨论。
-func (s *Service) HidePost(u *models.User, postID uint) (bool, *Error) {
-	p, err := s.loadPost(u, postID)
-	if err != nil {
-		return false, err
-	}
-	if (p.UserID == nil || *p.UserID != u.ID) && !u.IsModerator() {
-		return false, Err(http.StatusForbidden, "无权隐藏该回复。")
-	}
-	var newHiddenAt *time.Time
-	updates := map[string]any{"hidden_at": nil, "hidden_user_id": nil}
-	if p.HiddenAt == nil {
-		now := time.Now()
-		newHiddenAt = &now
-		updates = map[string]any{"hidden_at": newHiddenAt, "hidden_user_id": u.ID}
-	}
-	if err := s.db.Model(&models.Post{}).Where("id = ?", p.ID).Updates(updates).Error; err != nil {
-		return false, Err(http.StatusInternalServerError, "操作失败，请重试。")
-	}
-
-	// 若操作的是主楼/首帖，同步设置讨论的隐藏状态（隐藏人/清空值与帖子一致）
-	var d models.Discussion
-	if err := s.db.Select("id", "first_post_id").First(&d, p.DiscussionID).Error; err == nil {
-		if (p.Number != nil && *p.Number == 1) || (d.FirstPostID != nil && p.ID == *d.FirstPostID) {
-			if err := s.db.Model(&models.Discussion{}).Where("id = ?", d.ID).Updates(updates).Error; err != nil {
-				return false, Err(http.StatusInternalServerError, "操作失败，请重试。")
-			}
-		}
-	}
-
-	return newHiddenAt != nil, nil
+	return now, nil
 }
 
 // LikeResult 点赞切换返回。
@@ -158,7 +117,7 @@ type LikeResult struct {
 
 // ToggleLike 切换当前用户对帖子的点赞。
 func (s *Service) ToggleLike(u *models.User, postID uint) (LikeResult, *Error) {
-	p, err := s.loadPost(u, postID)
+	p, err := s.loadPost(postID)
 	if err != nil {
 		return LikeResult{}, err
 	}
@@ -182,4 +141,110 @@ func (s *Service) ToggleLike(u *models.User, postID uint) (LikeResult, *Error) {
 	var n int64
 	s.db.Model(&models.PostLike{}).Where("post_id = ?", p.ID).Count(&n)
 	return LikeResult{Liked: liked, LikeCount: n, Likers: s.loadPostLikers(p.ID)}, nil
+}
+
+type PostDTO struct {
+	ID         uint       `json:"id"`
+	Number     int        `json:"number"`
+	Author     *UserDTO   `json:"author"`
+	Content    string     `json:"content"` // Markdown 原文
+	HTML       string     `json:"html"`    // 实时渲染（消毒后）
+	LikeCount  int        `json:"likeCount"`
+	Liked      bool       `json:"liked"`
+	Likers     []UserDTO  `json:"likers"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	EditedAt   *time.Time `json:"editedAt"`
+	CanEdit    bool       `json:"canEdit"`
+	Discussion struct {
+		ID   uint   `json:"id"`
+		Slug string `json:"slug"`
+	} `json:"discussion"`
+}
+
+func (s *Service) postDTO(p *models.Post, likedSet map[uint]bool, u *models.User) PostDTO {
+	likers := make([]UserDTO, 0, len(p.Likers))
+	for i := range p.Likers {
+		if d := s.UserDTO(&p.Likers[i]); d != nil {
+			likers = append(likers, *d)
+		}
+	}
+	source := p.Markdown()
+	html, _ := util.Render(source, s.mentionedUserID)
+	dto := PostDTO{
+		ID: p.ID, Number: p.PostNumber(), Author: s.UserDTO(&p.User),
+		Content: source, HTML: html,
+		LikeCount: p.LikeCount, Liked: likedSet[p.ID], Likers: likers,
+		CreatedAt: p.CreatedAt, EditedAt: p.EditedAt,
+		CanEdit: !s.cfg.ReadOnly && canEditPost(u, p),
+	}
+	dto.Discussion.ID = p.DiscussionID
+	return dto
+}
+
+// loadLikes 批量填充帖子的点赞数、点赞用户列表（每帖最近 20 条）与当前用户是否已赞。
+func (s *Service) loadLikes(posts []models.Post, viewer *models.User) map[uint]bool {
+	liked := map[uint]bool{}
+	if len(posts) == 0 {
+		return liked
+	}
+	ids := make([]uint, 0, len(posts))
+	for i := range posts {
+		ids = append(ids, posts[i].ID)
+	}
+	var likes []models.PostLike
+	s.db.Where("post_id IN ?", ids).Order("created_at DESC, user_id DESC").Find(&likes)
+	counts := map[uint]int{}
+	likers := map[uint][]uint{}
+	userIDs := []uint{}
+	seen := map[uint]bool{}
+	for _, l := range likes {
+		counts[l.PostID]++
+		if len(likers[l.PostID]) < 20 {
+			likers[l.PostID] = append(likers[l.PostID], l.UserID)
+			if !seen[l.UserID] {
+				seen[l.UserID] = true
+				userIDs = append(userIDs, l.UserID)
+			}
+		}
+	}
+	userMap := s.usersByIDs(userIDs)
+	for i := range posts {
+		posts[i].LikeCount = counts[posts[i].ID]
+		posts[i].Likers = []models.User{}
+		for _, uid := range likers[posts[i].ID] {
+			if u, ok := userMap[uid]; ok {
+				posts[i].Likers = append(posts[i].Likers, *u)
+			}
+		}
+	}
+	if viewer != nil {
+		var mine []models.PostLike
+		s.db.Where("post_id IN ? AND user_id = ?", ids, viewer.ID).Find(&mine)
+		for _, l := range mine {
+			liked[l.PostID] = true
+		}
+	}
+	return liked
+}
+
+// loadPostLikers 获取单帖最近点赞用户列表（用于点赞切换后即时返回）。
+func (s *Service) loadPostLikers(postID uint) []UserDTO {
+	var likes []models.PostLike
+	if err := s.db.Where("post_id = ?", postID).Order("created_at DESC, user_id DESC").Limit(20).Find(&likes).Error; err != nil || len(likes) == 0 {
+		return []UserDTO{}
+	}
+	userIDs := make([]uint, 0, len(likes))
+	for _, l := range likes {
+		userIDs = append(userIDs, l.UserID)
+	}
+	userMap := s.usersByIDs(userIDs)
+	likers := make([]UserDTO, 0, len(likes))
+	for _, l := range likes {
+		if u, ok := userMap[l.UserID]; ok {
+			if dto := s.UserDTO(u); dto != nil {
+				likers = append(likers, *dto)
+			}
+		}
+	}
+	return likers
 }

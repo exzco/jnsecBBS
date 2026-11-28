@@ -7,18 +7,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/exzco/bbs/internal/auth"
+	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/models"
+	"github.com/exzco/bbs/internal/service"
 	"github.com/labstack/echo/v4"
 )
 
 func TestPasswordChangeContractAndSessionRevocation(t *testing.T) {
 	g, user, router := profileTestServer(t)
-	hash, err := auth.HashPassword("old-password")
-	if err != nil {
+	if err := user.SetPassword("old-password"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Model(user).Update("password", hash).Error; err != nil {
+	if err := g.Model(user).Update("password", user.Password).Error; err != nil {
 		t.Fatal(err)
 	}
 	otherUser := models.User{Username: "other-password-user", Email: "other-password@example.org"}
@@ -41,9 +41,8 @@ func TestPasswordChangeContractAndSessionRevocation(t *testing.T) {
 			return next(c)
 		}
 	})
-	otherRequest := httptest.NewRequest(http.MethodGet, "/api/me", nil)
-	otherRequest.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: otherToken})
-	if cached, _ := auth.UserFromRequest(g, otherRequest); cached == nil {
+	svc := service.New(&config.Config{}, g)
+	if loggedIn, _ := svc.UserByToken(otherToken); loggedIn == nil {
 		t.Fatal("other device must be logged in before the password change")
 	}
 
@@ -65,7 +64,7 @@ func TestPasswordChangeContractAndSessionRevocation(t *testing.T) {
 	if err := g.First(&unchanged, user.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !auth.CheckPassword(unchanged.Password, "old-password") {
+	if !unchanged.CheckPassword("old-password") {
 		t.Fatal("rejected requests changed the password")
 	}
 	var count int64
@@ -84,7 +83,7 @@ func TestPasswordChangeContractAndSessionRevocation(t *testing.T) {
 	if err := g.First(&updated, user.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !auth.CheckPassword(updated.Password, "new-password") || auth.CheckPassword(updated.Password, "old-password") {
+	if !updated.CheckPassword("new-password") || updated.CheckPassword("old-password") {
 		t.Fatal("password change did not replace the stored password")
 	}
 	var remaining []models.AccessToken
@@ -94,7 +93,7 @@ func TestPasswordChangeContractAndSessionRevocation(t *testing.T) {
 	if len(remaining) != 2 || remaining[0].Token != currentToken || remaining[1].Token != unrelatedToken {
 		t.Fatal("password change must retain the current session and unrelated users' sessions")
 	}
-	if cached, _ := auth.UserFromRequest(g, otherRequest); cached != nil {
-		t.Fatal("revoked device still authenticated through the session cache")
+	if loggedIn, _ := svc.UserByToken(otherToken); loggedIn != nil {
+		t.Fatal("revoked device still authenticated")
 	}
 }

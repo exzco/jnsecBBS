@@ -21,7 +21,8 @@ func InitializeEmpty(g *gorm.DB) error {
 		&models.User{}, &models.Group{}, &models.Discussion{}, &models.Post{},
 		&models.PostLike{}, &models.Tag{}, &models.Notification{}, &models.AccessToken{},
 		&models.InviteCode{}, &models.Setting{}, &models.GroupPermission{}, &models.UserProfile{},
-		&models.DiscussionUser{}, &models.DiscussionView{},
+		&models.DiscussionUser{}, &models.DiscussionReadPosition{}, &models.DiscussionView{},
+		&models.EmailOutbox{}, &models.EmailBind{},
 	); err != nil {
 		return err
 	}
@@ -34,9 +35,6 @@ func InitializeEmpty(g *gorm.DB) error {
 		}
 	}
 	if err := db.CleanupJoinTableDuplicates(g); err != nil {
-		return err
-	}
-	if err := db.SyncHiddenFirstPostDiscussions(g); err != nil {
 		return err
 	}
 	groups := []models.Group{

@@ -66,7 +66,7 @@ func TestModerateDoesNotDuplicateTags(t *testing.T) {
 
 	// Check table rows in flarum_discussion_tag
 	var count int64
-	if err := g.Table("flarum_discussion_tag").Where("discussion_id = ?", d.ID).Count(&count).Error; err != nil {
+	if err := g.Model(&models.DiscussionTag{}).Where("discussion_id = ?", d.ID).Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {
@@ -79,7 +79,7 @@ func TestModerateDoesNotDuplicateTags(t *testing.T) {
 		"tagIds": []uint{tag1.ID, tag2.ID, tag1.ID}, // intentionally send duplicate ID
 	})
 
-	if err := g.Table("flarum_discussion_tag").Where("discussion_id = ?", d.ID).Count(&count).Error; err != nil {
+	if err := g.Model(&models.DiscussionTag{}).Where("discussion_id = ?", d.ID).Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {

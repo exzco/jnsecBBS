@@ -10,22 +10,14 @@ import (
 
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/handler"
-	"github.com/exzco/bbs/internal/infra/cache"
 	"github.com/exzco/bbs/internal/infra/db"
+	"github.com/exzco/bbs/internal/middleware"
 	"github.com/exzco/bbs/internal/models"
 	"github.com/exzco/bbs/internal/service"
 	"github.com/exzco/bbs/tests/testdb"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
-
-// resetCache 每个用例都是独立数据库且可能直写权限表（绕过 API 失效路径），
-// 而缓存是进程级单例，必须按用例清空，避免跨用例/跨库串味。
-func resetCache() {
-	for _, p := range []string{"tag:", "setting:", "user:", "session:"} {
-		cache.Default.DeletePrefix(p)
-	}
-}
 
 func profileTestServer(t *testing.T) (*gorm.DB, *models.User, *echo.Echo) {
 	t.Helper()
@@ -42,7 +34,6 @@ func profileTestServer(t *testing.T) (*gorm.DB, *models.User, *echo.Echo) {
 	if err := testdb.InitializeEmpty(g); err != nil {
 		t.Fatal(err)
 	}
-	resetCache()
 	user := &models.User{Username: "profile-user", Email: "profile@example.org", Bio: "old bio"}
 	if err := g.Create(user).Error; err != nil {
 		t.Fatal(err)
@@ -54,7 +45,8 @@ func profileTestServer(t *testing.T) (*gorm.DB, *models.User, *echo.Echo) {
 	r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error { c.Set("user", user); return next(c) }
 	})
-	handler.New(&config.Config{}, g).Register(r)
+	cfg := &config.Config{}
+	middleware.Register(r, cfg, g, handler.New(cfg, g))
 	return g, user, r
 }
 

@@ -7,13 +7,15 @@ import (
 
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/handler"
+	"github.com/exzco/bbs/internal/middleware"
 	"github.com/labstack/echo/v4"
 )
 
 func TestReadOnlyRejectsAllForumWrites(t *testing.T) {
 	r := echo.New()
-	handler.New(&config.Config{ReadOnly: true}, nil).Register(r)
-	for _, path := range []string{"/api/discussions", "/api/discussions/1/reply", "/api/discussions/1/read-progress", "/api/posts/1/edit", "/api/posts/1/like", "/api/auth/register", "/api/me/profile", "/api/me/avatar", "/api/me/password", "/api/admin/tags", "/api/admin/settings", "/api/me/notifications/read"} {
+	cfg := &config.Config{ReadOnly: true}
+	middleware.Register(r, cfg, nil, handler.New(cfg, nil))
+	for _, path := range []string{"/api/discussions", "/api/discussions/1/reply", "/api/discussions/1/read-progress", "/api/discussions/1/delete", "/api/posts/1/edit", "/api/posts/1/like", "/api/auth/register", "/api/me/profile", "/api/me/avatar", "/api/me/password", "/api/admin/tags", "/api/admin/settings", "/api/me/notifications/read"} {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest("POST", path, strings.NewReader(`{}`)))
 		if w.Code != 403 || !strings.Contains(w.Body.String(), `"code":"read_only"`) {

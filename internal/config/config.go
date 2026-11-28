@@ -24,16 +24,14 @@ type Smtp struct {
 }
 
 type Config struct {
-	ReadOnly      bool   `yaml:"read_only"`
-	Listen        string `yaml:"listen"`
-	SiteName      string `yaml:"site_name"`
-	Timezone      string `yaml:"timezone"`
-	DataDir       string `yaml:"data_dir"`
-	SessionSecret string `yaml:"session_secret"`
-	CookieSecure  bool   `yaml:"cookie_secure"`
-	TrustProxy    bool   `yaml:"trust_proxy"`
-	// TrustedOrigins 是 gorilla/csrf 同源校验的白名单（完整 Origin，含协议）。
-	// TLS 在 nginx 终止、应用收到明文 HTTP 时，Origin 与转发 Host 不一致会误杀写请求，白名单兜底。
+	ReadOnly       bool     `yaml:"read_only"`
+	Listen         string   `yaml:"listen"`
+	SiteName       string   `yaml:"site_name"`
+	Timezone       string   `yaml:"timezone"`
+	DataDir        string   `yaml:"data_dir"`
+	SessionSecret  string   `yaml:"session_secret"`
+	CookieSecure   bool     `yaml:"cookie_secure"`
+	TrustProxy     bool     `yaml:"trust_proxy"`
 	TrustedOrigins []string `yaml:"trusted_origins"`
 	Database       Database `yaml:"database"`
 	Registration   string   `yaml:"registration"` // open | invite

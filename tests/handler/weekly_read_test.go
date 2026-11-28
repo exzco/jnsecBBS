@@ -204,7 +204,7 @@ func TestWeeklyDiscussionRecentAndFromStart(t *testing.T) {
 	}
 }
 
-func TestWeeklyDiscussionPaginationWithHiddenPosts(t *testing.T) {
+func TestWeeklyDiscussionPaginationIncludesAllPosts(t *testing.T) {
 	g, user, router := profileTestServer(t)
 
 	weeklyTag := models.Tag{Name: "周报", Slug: "weekly"}
@@ -217,7 +217,7 @@ func TestWeeklyDiscussionPaginationWithHiddenPosts(t *testing.T) {
 		SlugCol:      "weekly-with-hidden",
 		UserID:       &user.ID,
 		IsApproved:   true,
-		CommentCount: 14,
+		CommentCount: 20,
 		Tags:         []models.Tag{weeklyTag},
 	}
 	lastNum := 20
@@ -226,7 +226,7 @@ func TestWeeklyDiscussionPaginationWithHiddenPosts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 20 posts total; posts 5..10 are hidden (6 hidden, 14 visible)
+	// 20 条回复均参与分页，旧数据的隐藏标记不再影响查询。
 	for i := 1; i <= 20; i++ {
 		num := i
 		p := models.Post{
@@ -248,9 +248,9 @@ func TestWeeklyDiscussionPaginationWithHiddenPosts(t *testing.T) {
 		}
 	}
 
-	// Non-moderator request without page -> should go to last page of visible posts
+	// 显式指定第 1 页，使用分页加载而非周报默认的近期窗口加载。
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d", disc.ID), nil)
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d?page=1", disc.ID), nil)
 	router.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
@@ -271,98 +271,20 @@ func TestWeeklyDiscussionPaginationWithHiddenPosts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 14 visible posts with perPagePosts = 15 => 1 page with exactly 14 posts
-	if res.Page.Total != 14 {
-		t.Fatalf("expected total visible comments 14, got %d", res.Page.Total)
+	// 每页 15 条，共 20 条：第 1 页包含第 1 至 15 楼，包括带隐藏标记的楼层。
+	if res.Page.Total != 20 {
+		t.Fatalf("expected total comments 20, got %d", res.Page.Total)
 	}
-	if res.Page.Pages != 1 {
-		t.Fatalf("expected 1 page, got %d", res.Page.Pages)
+	if res.Page.Page != 1 || res.Page.Pages != 2 {
+		t.Fatalf("expected page 1 of 2, got page %d of %d", res.Page.Page, res.Page.Pages)
 	}
-	if len(res.Posts) != 14 {
-		t.Fatalf("expected 14 visible posts on page 1, got %d", len(res.Posts))
+	if len(res.Posts) != 15 {
+		t.Fatalf("expected 15 posts on page 1, got %d", len(res.Posts))
 	}
-	if res.Posts[len(res.Posts)-1].Number != 20 {
-		t.Fatalf("expected latest post (number 20) to be visible on page 1, got number %d", res.Posts[len(res.Posts)-1].Number)
-	}
-}
-
-func TestHideFirstPostSynchronizesDiscussionHidden(t *testing.T) {
-	g, user, router := profileTestServer(t)
-
-	disc := models.Discussion{
-		Title:        "首帖隐藏测试",
-		SlugCol:      "first-post-hide-test",
-		UserID:       &user.ID,
-		IsApproved:   true,
-		CommentCount: 1,
-	}
-	if err := g.Create(&disc).Error; err != nil {
-		t.Fatal(err)
-	}
-
-	num := 1
-	post := models.Post{
-		DiscussionID: disc.ID,
-		Number:       &num,
-		UserID:       &user.ID,
-		Type:         "comment",
-		Content:      "主楼内容",
-		IsApproved:   true,
-	}
-	if err := g.Create(&post).Error; err != nil {
-		t.Fatal(err)
-	}
-	disc.FirstPostID = &post.ID
-	g.Save(&disc)
-
-	// Hide the first post
-	wHide := httptest.NewRecorder()
-	reqHide := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/posts/%d/hide", post.ID), nil)
-	router.ServeHTTP(wHide, reqHide)
-	if wHide.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", wHide.Code, wHide.Body.String())
-	}
-
-	// Verify discussion in DB is now hidden
-	var dInDB models.Discussion
-	if err := g.First(&dInDB, disc.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if dInDB.HiddenAt == nil {
-		t.Fatalf("expected discussion.HiddenAt to be non-nil after hiding first post")
-	}
-
-	// Verify accessing discussion directly returns 404 for normal user
-	wDetail := httptest.NewRecorder()
-	reqDetail := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d", disc.ID), nil)
-	router.ServeHTTP(wDetail, reqDetail)
-	if wDetail.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for discussion whose first post is hidden, got %d", wDetail.Code)
-	}
-
-	// Unhide the first post
-	wUnhide := httptest.NewRecorder()
-	reqUnhide := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/posts/%d/hide", post.ID), nil)
-	router.ServeHTTP(wUnhide, reqUnhide)
-	if wUnhide.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", wUnhide.Code, wUnhide.Body.String())
-	}
-
-	// Verify discussion in DB is unhidden
-	var dFresh models.Discussion
-	if err := g.First(&dFresh, disc.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if dFresh.HiddenAt != nil {
-		t.Fatalf("expected discussion.HiddenAt to be nil after unhiding first post")
-	}
-
-	// Verify accessing discussion returns 200
-	wDetail2 := httptest.NewRecorder()
-	reqDetail2 := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/discussions/%d", disc.ID), nil)
-	router.ServeHTTP(wDetail2, reqDetail2)
-	if wDetail2.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", wDetail2.Code, wDetail2.Body.String())
+	for i, post := range res.Posts {
+		if post.Number != 1+i {
+			t.Fatalf("expected post number %d, got %d", 1+i, post.Number)
+		}
 	}
 }
 

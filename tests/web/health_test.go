@@ -5,8 +5,10 @@ import (
 	"testing"
 
 	"github.com/exzco/bbs/internal/config"
+	"github.com/exzco/bbs/internal/handler"
 	"github.com/exzco/bbs/internal/infra/db"
-	"github.com/exzco/bbs/internal/web"
+	"github.com/exzco/bbs/internal/middleware"
+	"github.com/labstack/echo/v4"
 )
 
 func TestHealthDetectsClosedDatabase(t *testing.T) {
@@ -19,17 +21,17 @@ func TestHealthDetectsClosedDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = connection.Close() })
-	s, err := web.New(&config.Config{DataDir: t.TempDir()}, g)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := s.Handler()
+	cfg := &config.Config{DataDir: t.TempDir()}
+	e := echo.New()
+	h := handler.New(cfg, g)
+	e.Use(middleware.Session(h.Svc()))
+	middleware.Register(e, cfg, g, h)
 	for _, want := range []int{200, 503} {
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest("GET", "/api/health", nil)
 		// Health bypasses session lookup, including when the DB is unavailable.
 		r.Header.Set("Cookie", "jnsec_session=invalid")
-		handler.ServeHTTP(w, r)
+		e.ServeHTTP(w, r)
 		if w.Code != want || w.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("health: status=%d body=%s", w.Code, w.Body.String())
 		}

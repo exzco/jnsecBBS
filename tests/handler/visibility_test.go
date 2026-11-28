@@ -8,15 +8,15 @@ import (
 
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/handler"
-	"github.com/exzco/bbs/internal/infra/cache"
 	"github.com/exzco/bbs/internal/infra/db"
+	"github.com/exzco/bbs/internal/middleware"
 	"github.com/exzco/bbs/internal/models"
 	"github.com/exzco/bbs/internal/service"
 	"github.com/exzco/bbs/tests/testdb"
 	"github.com/labstack/echo/v4"
 )
 
-func TestRestrictedContentCannotLeakAcrossEndpoints(t *testing.T) {
+func TestAnyLoggedInUserCanReadAndReplyAcrossTags(t *testing.T) {
 	g, err := db.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -33,11 +33,11 @@ func TestRestrictedContentCannotLeakAcrossEndpoints(t *testing.T) {
 	}
 	var public models.Tag
 	g.First(&public)
-	private := models.Tag{Name: "secret", Slug: "secret", IsRestricted: true}
-	if err = g.Create(&private).Error; err != nil {
+	restricted := models.Tag{Name: "secret", Slug: "secret", IsRestricted: true}
+	if err = g.Create(&restricted).Error; err != nil {
 		t.Fatal(err)
 	}
-	disc := models.Discussion{Title: "secret-needle", UserID: &user.ID, IsApproved: true, Tags: []models.Tag{public, private}}
+	disc := models.Discussion{Title: "secret-needle", UserID: &user.ID, IsApproved: true, Tags: []models.Tag{public, restricted}}
 	if err = g.Create(&disc).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -46,41 +46,89 @@ func TestRestrictedContentCannotLeakAcrossEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := echo.New()
-	resetCache()
 	r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error { c.Set("user", &user); return next(c) }
 	})
-	handler.New(&config.Config{}, g).Register(r)
-	for _, path := range []string{"/api/home", "/api/search?q=needle", "/api/users/reader", "/api/tags/general/discussions"} {
+	cfg := &config.Config{}
+	middleware.Register(r, cfg, g, handler.New(cfg, g))
+
+	for _, path := range []string{"/api/home", "/api/search?q=needle", "/api/users/reader", "/api/tags/general/discussions", "/api/tags/secret", fmt.Sprintf("/api/discussions/%d", disc.ID)} {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
-		if w.Code != 200 || strings.Contains(w.Body.String(), "secret-needle") {
+		if w.Code != 200 {
 			t.Errorf("%s: status=%d body=%s", path, w.Code, w.Body.String())
 		}
 	}
-	for _, tc := range []struct{ method, path string }{
-		{"GET", fmt.Sprintf("/api/discussions/%d", disc.ID)},
-		{"GET", "/api/tags/secret"},
-		{"GET", fmt.Sprintf("/api/posts/%d/edit", post.ID)},
-		{"POST", fmt.Sprintf("/api/discussions/%d/reply", disc.ID)},
-		{"POST", fmt.Sprintf("/api/posts/%d/like", post.ID)},
-	} {
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{"content":"test"}`)))
-		if w.Code != 403 && w.Code != 404 {
-			t.Errorf("%s %s: got %d", tc.method, tc.path, w.Code)
-		}
+	wReply := httptest.NewRecorder()
+	reqReply := httptest.NewRequest("POST", fmt.Sprintf("/api/discussions/%d/reply", disc.ID), strings.NewReader(`{"content":"any-member-reply"}`))
+	reqReply.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(wReply, reqReply)
+	if wReply.Code != 200 {
+		t.Fatalf("reply on restricted tag failed: status=%d body=%s", wReply.Code, wReply.Body.String())
 	}
-	// The built-in member group is implicit for signed-in users, matching Flarum.
-	if err = g.Create(&models.GroupPermission{GroupID: models.GroupMember, Permission: fmt.Sprintf("tag%d.viewDiscussions", private.ID)}).Error; err != nil {
+}
+
+func TestAuthorCanPhysicallyDeleteOwnDiscussionAndCannotTouchOthersReplies(t *testing.T) {
+	g, err := db.Open("sqlite", ":memory:")
+	if err != nil {
 		t.Fatal(err)
 	}
-	// 直写权限表绕过了 API 的失效路径，手动失效 tag:perms:all。
-	cache.Default.Delete(cache.TagPermsKey())
+	sqlDB, _ := g.DB()
+	sqlDB.SetMaxOpenConns(1)
+	defer sqlDB.Close()
+	if err = testdb.InitializeEmpty(g); err != nil {
+		t.Fatal(err)
+	}
+
+	author := models.User{Username: "author", Email: "author@example.org"}
+	other := models.User{Username: "other", Email: "other@example.org"}
+	if err = g.Create(&author).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = g.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	var tag models.Tag
+	g.First(&tag)
+
+	svc := service.New(&config.Config{}, g)
+	created, serr := svc.CreateDiscussion(&author, "作者待删除帖子", "正文内容", []uint{tag.ID})
+	if serr != nil {
+		t.Fatalf("CreateDiscussion failed: %s", serr.Message)
+	}
+	replyRes, serr := svc.Reply(&other, created.ID, "其他人的回复")
+	if serr != nil {
+		t.Fatalf("Reply failed: %s", serr.Message)
+	}
+
+	// Author cannot edit another user's reply.
+	if _, errEdit := svc.EditPost(&author, replyRes.PostID, "篡改"); errEdit == nil || errEdit.Status != 403 {
+		t.Fatalf("expected 403 when author edits someone else's reply, got %+v", errEdit)
+	}
+	// Non-author cannot delete someone else's discussion.
+	if errDel := svc.DeleteDiscussion(&other, created.ID); errDel == nil || errDel.Status != 403 {
+		t.Fatalf("expected 403 when non-author deletes discussion, got %+v", errDel)
+	}
+
+	// Author physically deletes their own discussion.
+	r := echo.New()
+	r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error { c.Set("user", &author); return next(c) }
+	})
+	cfg := &config.Config{}
+	middleware.Register(r, cfg, g, handler.New(cfg, g))
+
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", fmt.Sprintf("/api/discussions/%d", disc.ID), nil))
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "secret-needle") {
-		t.Fatalf("granted member cannot read: %d %s", w.Code, w.Body.String())
+	r.ServeHTTP(w, httptest.NewRequest("POST", fmt.Sprintf("/api/discussions/%d/delete", created.ID), nil))
+	if w.Code != 200 {
+		t.Fatalf("author delete failed: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	var discCount, postCount int64
+	g.Model(&models.Discussion{}).Where("id = ?", created.ID).Count(&discCount)
+	g.Model(&models.Post{}).Where("discussion_id = ?", created.ID).Count(&postCount)
+	if discCount != 0 || postCount != 0 {
+		t.Fatalf("expected physical delete of discussion and posts, got disc=%d post=%d", discCount, postCount)
 	}
 }
 
@@ -95,7 +143,6 @@ func TestPostFormAndPostingWithoutChildTag(t *testing.T) {
 	if err = testdb.InitializeEmpty(g); err != nil {
 		t.Fatal(err)
 	}
-	resetCache()
 
 	user := models.User{Username: "author", Email: "author@example.org"}
 	if err = g.Create(&user).Error; err != nil {
@@ -120,9 +167,10 @@ func TestPostFormAndPostingWithoutChildTag(t *testing.T) {
 	r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error { c.Set("user", &user); return next(c) }
 	})
-	server := handler.New(&config.Config{}, g)
-	server.Register(r)
-	svc := service.New(&config.Config{}, g)
+	cfg := &config.Config{}
+	server := handler.New(cfg, g)
+	middleware.Register(r, cfg, g, server)
+	svc := service.New(cfg, g)
 
 	// 1. 测试 PostForm：有子版块的父版块 children 仅包含子标签；无子版块的父版块 children 为空
 	groups := svc.PostForm(&user)

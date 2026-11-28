@@ -6,11 +6,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/exzco/bbs/internal/auth"
 	"github.com/exzco/bbs/internal/config"
+	"github.com/exzco/bbs/internal/handler"
 	"github.com/exzco/bbs/internal/infra/db"
-	"github.com/exzco/bbs/internal/web"
+	"github.com/exzco/bbs/internal/middleware"
 	"github.com/exzco/bbs/tests/testdb"
+	"github.com/labstack/echo/v4"
 )
 
 func newCSRFTestHandler(t *testing.T, cfg *config.Config) http.Handler {
@@ -32,11 +33,12 @@ func newCSRFTestHandler(t *testing.T, cfg *config.Config) http.Handler {
 	if cfg.SessionSecret == "" {
 		cfg.SessionSecret = "test-session-secret-0123456789abcdef"
 	}
-	s, err := web.New(cfg, g)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s.Handler()
+	e := echo.New()
+	h := handler.New(cfg, g)
+	e.Pre(middleware.CSRF(cfg))
+	e.Use(middleware.Session(h.Svc()))
+	middleware.Register(e, cfg, g, h)
+	return e
 }
 
 func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
@@ -67,8 +69,8 @@ func TestCSRFCookiePathMaxAgeAndNoStore(t *testing.T) {
 	if csrfCookie.Path != "/" {
 		t.Fatalf("expected Path=/, got %q", csrfCookie.Path)
 	}
-	if csrfCookie.MaxAge != auth.SessionMaxAge {
-		t.Fatalf("expected MaxAge=%d, got %d", auth.SessionMaxAge, csrfCookie.MaxAge)
+	if csrfCookie.MaxAge != handler.SessionMaxAge {
+		t.Fatalf("expected MaxAge=%d, got %d", handler.SessionMaxAge, csrfCookie.MaxAge)
 	}
 	if !csrfCookie.Secure || !csrfCookie.HttpOnly {
 		t.Fatalf("expected Secure & HttpOnly cookie, got %+v", csrfCookie)

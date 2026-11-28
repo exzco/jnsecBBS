@@ -1,5 +1,4 @@
 // 账号与会话相关业务：登录校验、注册、资料/密码/头像维护、通知。
-// HTTP 绑定与 Cookie 写入由 api 层负责，本包不依赖任何 Web 框架。
 package service
 
 import (
@@ -20,9 +19,8 @@ import (
 
 	"github.com/dchest/captcha"
 	"github.com/disintegration/imaging"
-	"github.com/exzco/bbs/internal/auth"
-	"github.com/exzco/bbs/internal/infra/cache"
 	"github.com/exzco/bbs/internal/models"
+	"github.com/exzco/bbs/internal/util"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -45,13 +43,34 @@ func (s *Service) UnreadCount(userID uint) int64 {
 	return n
 }
 
+// Me 组装当前会话的站点与用户数据（供 /api/me 使用）。
+func (s *Service) Me(u *models.User) map[string]any {
+	resp := map[string]any{
+		"user":         s.UserDTO(u),
+		"readOnly":     s.cfg.ReadOnly,
+		"siteName":     s.SettingValue(models.SettingKeySiteName),
+		"registration": s.SettingValue(models.SettingKeyRegistration),
+		"welcomeText":  s.SettingValue(models.SettingKeyWelcomeText),
+	}
+	if u != nil {
+		resp["email"] = u.Email
+		resp["emailBound"] = s.EmailBound(u.ID)
+		resp["unread"] = s.UnreadCount(u.ID)
+		resp["realName"], resp["blogUrl"] = s.LoadUserProfileExtra(u.ID)
+	}
+	return resp
+}
+
 // Login 校验用户名/邮箱与密码（Flarum 语义），返回可登录用户。
 func (s *Service) Login(username, password string) (*models.User, *Error) {
+	if username == "" || password == "" {
+		return nil, Err(http.StatusBadRequest, "请输入用户名和密码。")
+	}
 	var u models.User
 	if err := s.db.Preload("Groups").
 		Where("lower(username) = lower(?) OR lower(email) = lower(?)", username, username).
 		First(&u).Error; err != nil ||
-		!auth.CheckPassword(u.Password, password) {
+		!u.CheckPassword(password) {
 		return nil, Err(http.StatusBadRequest, "用户名或密码错误。")
 	}
 	if u.IsBanned() {
@@ -60,33 +79,20 @@ func (s *Service) Login(username, password string) (*models.User, *Error) {
 	return &u, nil
 }
 
-// TouchSeen 更新活跃时间并失效用户缓存（只读模式跳过）。
+// TouchSeen 更新活跃时间（只读模式跳过）。
 func (s *Service) TouchSeen(u *models.User) error {
 	if s.cfg.ReadOnly {
 		return nil
 	}
 	now := time.Now()
-	if err := s.db.Model(u).Update("last_seen_at", &now).Error; err != nil {
-		return err
-	}
-	// last_seen_at 已变更，显式失效 user:id（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.UserIDKey(u.ID))
-	return nil
+	return s.db.Model(u).Update("last_seen_at", &now).Error
 }
 
-// RegisterInput 注册请求（已由 handler 绑定）。
-type RegisterInput struct {
-	Username        string `json:"username"`
-	Email           string `json:"email"`
-	Password        string `json:"password"`
-	PasswordConfirm string `json:"passwordConfirm"`
-	Invite          string `json:"invite"`
-	CaptchaID       string `json:"captchaId"`
-	CaptchaValue    string `json:"captchaValue"`
-}
+// NewCaptcha 生成新的图形验证码 ID。
+func (s *Service) NewCaptcha() string { return captcha.New() }
 
 // Register 校验并创建用户（单事务），邀请码模式下消费邀请码。
-func (s *Service) Register(in RegisterInput) (*models.User, *Error) {
+func (s *Service) Register(in models.RegisterInput) (*models.User, *Error) {
 	username := strings.TrimSpace(in.Username)
 	email := strings.TrimSpace(strings.ToLower(in.Email))
 
@@ -122,15 +128,14 @@ func (s *Service) Register(in RegisterInput) (*models.User, *Error) {
 	if cnt > 0 {
 		return nil, Err(http.StatusBadRequest, "邮箱已被注册。")
 	}
-	hash, err := auth.HashPassword(in.Password)
-	if err != nil {
-		return nil, Err(http.StatusInternalServerError, "注册失败，请重试。")
-	}
 	u := models.User{
-		Username: username, Email: email, Password: hash,
+		Username: username, Email: email,
 		IsEmailConfirmed: true, Preferences: []byte("a:0:{}"),
 	}
-	err = s.db.Transaction(func(tx *gorm.DB) error {
+	if err := u.SetPassword(in.Password); err != nil {
+		return nil, Err(http.StatusInternalServerError, "注册失败，请重试。")
+	}
+	err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&u).Error; err != nil {
 			return err
 		}
@@ -151,15 +156,8 @@ func (s *Service) Register(in RegisterInput) (*models.User, *Error) {
 	return &u, nil
 }
 
-// ProfileInput 个人资料修改（nil 表示不修改该字段）。
-type ProfileInput struct {
-	Bio      string  `json:"bio"`
-	RealName *string `json:"realName"`
-	BlogURL  *string `json:"blogUrl"`
-}
-
 // UpdateProfile 校验并保存简介与扩展资料；返回（用户视图, 实名, 博客链接）。
-func (s *Service) UpdateProfile(u *models.User, in ProfileInput) (*UserDTO, string, string, *Error) {
+func (s *Service) UpdateProfile(u *models.User, in models.ProfileInput) (*UserDTO, string, string, *Error) {
 	bio := strings.TrimSpace(in.Bio)
 	if len([]rune(bio)) > 500 {
 		bio = string([]rune(bio)[:500])
@@ -213,19 +211,12 @@ func (s *Service) UpdateProfile(u *models.User, in ProfileInput) (*UserDTO, stri
 		log.Printf("[service] updateProfile 保存失败 user=%s: %v", u.Username, err)
 		return nil, "", "", Err(http.StatusInternalServerError, "保存失败，请重试。")
 	}
-	// bio（及扩展资料）已变更，显式失效 user:id（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.UserIDKey(u.ID))
 	u.Bio = bio
 	return s.UserDTO(u), extra.RealName, extra.BlogURL, nil
 }
 
-// EmailInput 换绑邮箱请求。
-type EmailInput struct {
-	Email string `json:"email"`
-}
-
 // UpdateEmail 更换绑定邮箱并标记为已绑定（绑定后才能接收回帖邮件通知）。
-func (s *Service) UpdateEmail(u *models.User, in EmailInput) *Error {
+func (s *Service) UpdateEmail(u *models.User, in models.EmailInput) *Error {
 	email := strings.TrimSpace(strings.ToLower(in.Email))
 	if _, err := mail.ParseAddress(email); err != nil {
 		return Err(http.StatusBadRequest, "邮箱格式不正确。")
@@ -239,37 +230,28 @@ func (s *Service) UpdateEmail(u *models.User, in EmailInput) *Error {
 		if err := tx.Model(u).Update("email", email).Error; err != nil {
 			return err
 		}
-		return tx.Where(&EmailBind{UserID: u.ID}).
-			Assign(&EmailBind{UserID: u.ID, BoundAt: time.Now()}).
-			FirstOrCreate(&EmailBind{}).Error
+		return tx.Where(&models.EmailBind{UserID: u.ID}).
+			Assign(&models.EmailBind{UserID: u.ID, BoundAt: time.Now()}).
+			FirstOrCreate(&models.EmailBind{}).Error
 	})
 	if err != nil {
 		return Err(http.StatusInternalServerError, "保存失败，请重试。")
 	}
-	// email 已变更，显式失效 user:id（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.UserIDKey(u.ID))
 	u.Email = email
 	return nil
 }
 
 // UnbindEmail 解除邮箱绑定（停止接收回帖邮件通知；注册邮箱保留）。
 func (s *Service) UnbindEmail(u *models.User) *Error {
-	if err := s.db.Delete(&EmailBind{}, "user_id = ?", u.ID).Error; err != nil {
+	if err := s.db.Delete(&models.EmailBind{}, "user_id = ?", u.ID).Error; err != nil {
 		return Err(http.StatusInternalServerError, "操作失败，请重试。")
 	}
 	return nil
 }
 
-// PasswordInput 修改密码请求。
-type PasswordInput struct {
-	Current string `json:"current"`
-	New     string `json:"new"`
-	Confirm string `json:"confirm"`
-}
-
 // UpdatePassword 校验并改密，踢掉其他设备的会话。
-func (s *Service) UpdatePassword(u *models.User, in PasswordInput, currentToken string) *Error {
-	if !auth.CheckPassword(u.Password, in.Current) {
+func (s *Service) UpdatePassword(u *models.User, in models.PasswordInput, currentToken string) *Error {
+	if !u.CheckPassword(in.Current) {
 		return Err(http.StatusBadRequest, "当前密码不正确。")
 	}
 	if len(in.New) < 8 {
@@ -278,20 +260,18 @@ func (s *Service) UpdatePassword(u *models.User, in PasswordInput, currentToken 
 	if in.New != in.Confirm {
 		return Err(http.StatusBadRequest, "两次输入的新密码不一致。")
 	}
-	hash, err := auth.HashPassword(in.New)
-	if err != nil {
+	oldHash := u.Password
+	if err := u.SetPassword(in.New); err != nil {
 		return Err(http.StatusInternalServerError, "修改失败，请重试。")
 	}
-	if err := s.db.Model(u).Update("password", hash).Error; err != nil {
+	if err := s.db.Model(u).Update("password", u.Password).Error; err != nil {
+		u.Password = oldHash
 		return Err(http.StatusInternalServerError, "修改失败，请重试。")
 	}
 	// 改密后踢掉其他设备的会话
 	if err := s.db.Where("user_id = ? AND token <> ?", u.ID, currentToken).Delete(&models.AccessToken{}).Error; err != nil {
 		return Err(http.StatusInternalServerError, "修改失败，请重试。")
 	}
-	// 密码与其他设备 token 均已变更，显式失效 user:id 与全会话缓存（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.UserIDKey(u.ID))
-	cache.Default.DeletePrefix(cache.SessionsPrefix())
 	return nil
 }
 
@@ -301,7 +281,6 @@ func (s *Service) RemoveAvatar(u *models.User) (string, *Error) {
 	if err := s.db.Model(u).Update("avatar_url", "").Error; err != nil {
 		return "", Err(http.StatusInternalServerError, "删除头像失败。")
 	}
-	cache.Default.Delete(cache.UserIDKey(u.ID))
 	if err := s.removeAvatarFile(old); err != nil {
 		log.Printf("[service] removeAvatar 旧文件清理失败 user=%d: %v", u.ID, err)
 		return "", Err(http.StatusInternalServerError, "删除头像失败。")
@@ -310,7 +289,10 @@ func (s *Service) RemoveAvatar(u *models.User) (string, *Error) {
 }
 
 // SaveAvatar 解码、缩放并保存头像（PNG 128×128），更新 avatar_url 并清理旧文件。
-func (s *Service) SaveAvatar(u *models.User, r io.Reader) (string, *Error) {
+func (s *Service) SaveAvatar(u *models.User, size int64, r io.Reader) (string, *Error) {
+	if size > 2<<20 {
+		return "", Err(http.StatusBadRequest, "头像文件不能超过 2MB。")
+	}
 	head := make([]byte, 512)
 	n, _ := r.Read(head)
 	ct := http.DetectContentType(head[:n])
@@ -341,8 +323,6 @@ func (s *Service) SaveAvatar(u *models.User, r io.Reader) (string, *Error) {
 		}
 		return "", Err(http.StatusInternalServerError, "保存头像失败。")
 	}
-	// avatar_url 已变更，显式失效 user:id（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.UserIDKey(u.ID))
 	if err := s.removeAvatarFile(old); err != nil {
 		log.Printf("[service] saveAvatar 旧文件清理失败 user=%d: %v", u.ID, err)
 		return "", Err(http.StatusInternalServerError, "保存头像失败。")
@@ -373,10 +353,10 @@ type NotificationDTO struct {
 	CreatedAt  time.Time             `json:"createdAt"`
 }
 
-// Notifications 当前用户最近 50 条通知（仅可见讨论）与未读数。
+// Notifications 当前用户最近 50 条通知与未读数。
 func (s *Service) Notifications(u *models.User) ([]NotificationDTO, int64) {
 	var notifs []models.Notification
-	s.db.Where("user_id = ? AND discussion_id IN (?)", u.ID, visibleDiscussions(s.db, u).Select("flarum_discussions.id").Where("hidden_at IS NULL AND is_approved = ?", true)).
+	s.db.Where("user_id = ?", u.ID).
 		Preload("Sender").Preload("Discussion").
 		Order("created_at DESC").Limit(50).Find(&notifs)
 	items := make([]NotificationDTO, 0, len(notifs))
@@ -398,4 +378,134 @@ func (s *Service) Notifications(u *models.User) ([]NotificationDTO, int64) {
 func (s *Service) MarkNotificationsRead(u *models.User) error {
 	return s.db.Model(&models.Notification{}).
 		Where("user_id = ? AND read_at IS NULL", u.ID).Update("read_at", time.Now()).Error
+}
+
+// ---------- 用户视图与通知辅助 ----------
+
+type GroupDTO struct {
+	ID    uint   `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+func groupDTOs(groups []models.Group) []GroupDTO {
+	out := make([]GroupDTO, 0, len(groups))
+	for i := range groups {
+		out = append(out, GroupDTO{ID: groups[i].ID, Name: groups[i].Name(), Color: groups[i].Color})
+	}
+	return out
+}
+
+type UserDTO struct {
+	ID               uint       `json:"id"`
+	Username         string     `json:"username"`
+	Bio              string     `json:"bio"`
+	Avatar           string     `json:"avatar"`
+	Groups           []GroupDTO `json:"groups"`
+	IsAdmin          bool       `json:"isAdmin"`
+	IsMod            bool       `json:"isMod"`
+	IsBanned         bool       `json:"isBanned"`
+	DiscussionsCount int        `json:"discussionsCount"`
+	PostsCount       int        `json:"postsCount"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	LastSeenAt       *time.Time `json:"lastSeenAt"`
+}
+
+// UserDTO 组装用户视图。
+func (s *Service) UserDTO(u *models.User) *UserDTO {
+	if u == nil {
+		return nil
+	}
+	return &UserDTO{
+		ID: u.ID, Username: u.Username, Bio: u.Bio,
+		Avatar: s.AvatarURL(u), Groups: groupDTOs(u.Groups),
+		IsAdmin: u.IsAdmin(), IsMod: u.IsModerator(), IsBanned: u.IsBanned(),
+		DiscussionsCount: u.DiscussionsCount, PostsCount: u.PostsCount,
+		CreatedAt: u.JoinedAtOrZero(), LastSeenAt: u.LastSeenAt,
+	}
+}
+
+// AvatarURL：flarum avatar_url 原样（相对 /assets 路径由资产挂载伺服）；
+// 为空则用字环头像。
+func (s *Service) AvatarURL(u *models.User) string {
+	if u == nil {
+		return "/avatar/_unknown.svg"
+	}
+	name := "_unknown"
+	if u.Username != "" {
+		name = u.Username
+	}
+	if u.AvatarURL != "" {
+		value := u.AvatarURL
+		if strings.HasPrefix(value, "/assets/") || strings.HasPrefix(value, "/avatars/") {
+			return value
+		}
+		if parsed, err := url.Parse(value); err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != "" {
+			return value
+		}
+		// Flarum persists a basename, not the public avatar URL.
+		if !strings.ContainsAny(value, "/\\:") && value != "." && value != ".." {
+			return "/assets/avatars/" + url.PathEscape(value)
+		}
+	}
+	return "/avatar/" + url.PathEscape(name) + ".svg"
+}
+
+// LoadUserProfileExtra 读取用户扩展资料；只读镜像可能尚未建表，缺表降级为空。
+func (s *Service) LoadUserProfileExtra(userID uint) (realName, blogURL string) {
+	var extra models.UserProfile
+	if err := s.db.Where("user_id = ?", userID).First(&extra).Error; err == nil {
+		return extra.RealName, extra.BlogURL
+	}
+	return "", ""
+}
+
+// usersByIDs 批量加载用户（含组）并按 ID 建索引。
+func (s *Service) usersByIDs(ids []uint) map[uint]*models.User {
+	m := make(map[uint]*models.User, len(ids))
+	if len(ids) == 0 {
+		return m
+	}
+	var users []models.User
+	s.db.Where("id IN ?", ids).Preload("Groups").Find(&users)
+	for i := range users {
+		m[users[i].ID] = &users[i]
+	}
+	return m
+}
+
+// mentionedUserID 解析 @提及 的用户 ID。
+func (s *Service) mentionedUserID(name string) (uint, bool) {
+	var id uint
+	s.db.Model(&models.User{}).Select("id").
+		Where("lower(username) = lower(?)", name).Scan(&id)
+	return id, id > 0
+}
+
+// notify 创建通知（bbs_notifications，Go 专属表；不给自己发）。
+func notify(g *gorm.DB, userID, senderID uint, typ string, discussionID, postID uint) error {
+	if userID == 0 || userID == senderID {
+		return nil
+	}
+	return g.Create(&models.Notification{
+		UserID: userID, SenderID: senderID, Type: typ,
+		DiscussionID: discussionID, PostID: postID,
+	}).Error
+}
+
+// notifyMentions 给正文 @提及 的用户发 mention 通知并返回被提及 ID 集
+// （MentionedUsernames 已去重且仅含正向解析名；供调用方抑制对楼主的重复通知）。
+func (s *Service) notifyMentions(g *gorm.DB, source string, senderID, discussionID, postID uint) (map[uint]bool, error) {
+	mentioned := map[uint]bool{}
+	for _, name := range util.MentionedUsernames(source, s.mentionedUserID) {
+		mid, ok := s.mentionedUserID(name)
+		if !ok || mid == senderID {
+			continue
+		}
+		if err := notify(g, mid, senderID, "mention", discussionID, postID); err != nil {
+			return nil, err
+		}
+		mentioned[mid] = true
+	}
+	return mentioned, nil
 }

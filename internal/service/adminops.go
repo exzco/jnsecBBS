@@ -8,10 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/exzco/bbs/internal/auth"
-	"github.com/exzco/bbs/internal/content"
-	"github.com/exzco/bbs/internal/infra/cache"
 	"github.com/exzco/bbs/internal/models"
+	"github.com/exzco/bbs/internal/util"
 	"gorm.io/gorm"
 )
 
@@ -40,23 +38,18 @@ func (s *Service) AdminMeta() AdminMeta {
 // AdminTagNode 管理页版块树节点。
 type AdminTagNode struct {
 	Tag      TagDTO         `json:"tag"`
-	ViewIDs  []uint         `json:"viewIds"`
-	PostIDs  []uint         `json:"postIds"`
 	Children []AdminTagNode `json:"children"`
 }
 
-// AdminTags 全量版块树（含权限组配置）。
+// AdminTags 全量版块树。
 func (s *Service) AdminTags() []AdminTagNode {
 	var tags []models.Tag
 	s.db.Order("position ASC, id ASC").Find(&tags)
-	tp := s.FillTagPerms(tags)
 
 	tops, byParent := groupTags(tags)
 	node := func(t models.Tag) AdminTagNode {
 		return AdminTagNode{
 			Tag:      s.TagDTO(&t, nil),
-			ViewIDs:  tp.View[t.ID],
-			PostIDs:  tp.Post[t.ID],
 			Children: []AdminTagNode{},
 		}
 	}
@@ -71,21 +64,8 @@ func (s *Service) AdminTags() []AdminTagNode {
 	return nodes
 }
 
-// TagInput 版块保存请求。
-type TagInput struct {
-	ID          uint   `json:"id"`
-	Name        string `json:"name"`
-	Slug        string `json:"slug"`
-	Color       string `json:"color"`
-	Position    int    `json:"position"`
-	ParentID    uint   `json:"parentId"`
-	Description string `json:"description"`
-	ViewGroups  []uint `json:"viewGroups"`
-	PostGroups  []uint `json:"postGroups"`
-}
-
-// SaveTag 新建/更新版块及其权限（单事务）。
-func (s *Service) SaveTag(in TagInput) *Error {
+// SaveTag 新建/更新版块（单事务）。
+func (s *Service) SaveTag(in models.TagInput) *Error {
 	name := strings.TrimSpace(in.Name)
 	slugIn := strings.ToLower(strings.TrimSpace(in.Slug))
 	color := strings.TrimSpace(in.Color)
@@ -96,7 +76,7 @@ func (s *Service) SaveTag(in TagInput) *Error {
 		return Err(http.StatusBadRequest, "版块名称不能为空。")
 	}
 	if slugIn == "" {
-		slugIn = content.MakeSlug(name)
+		slugIn = util.MakeSlug(name)
 	}
 	if !slugRe.MatchString(slugIn) {
 		return Err(http.StatusBadRequest, "URL 标识需为字母、数字或连字符（中文留空可自动生成）。")
@@ -107,35 +87,25 @@ func (s *Service) SaveTag(in TagInput) *Error {
 	}
 	position := in.Position
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		id := in.ID
 		if in.ID == 0 {
 			t := models.Tag{
 				Name: name, Slug: slugIn, Description: strings.TrimSpace(in.Description),
 				Color: color, Position: &position, ParentID: parentID,
 			}
-			if err := tx.Create(&t).Error; err != nil {
-				return err
-			}
-			id = t.ID
-		} else {
-			t := models.Tag{ID: in.ID}
-			if err := tx.First(&t).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&t).Updates(map[string]any{
-				"name": name, "slug": slugIn, "description": strings.TrimSpace(in.Description),
-				"color": color, "position": in.Position, "parent_id": parentID,
-			}).Error; err != nil {
-				return err
-			}
+			return tx.Create(&t).Error
 		}
-		return auth.SaveTagPerms(tx, id, in.ViewGroups, in.PostGroups)
+		t := models.Tag{ID: in.ID}
+		if err := tx.First(&t).Error; err != nil {
+			return err
+		}
+		return tx.Model(&t).Updates(map[string]any{
+			"name": name, "slug": slugIn, "description": strings.TrimSpace(in.Description),
+			"color": color, "position": in.Position, "parent_id": parentID,
+		}).Error
 	})
 	if err != nil {
 		return Err(http.StatusBadRequest, "保存失败："+err.Error())
 	}
-	// 版块行与授权行已变更，显式失效 tag:perms:all（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.TagPermsKey())
 	return nil
 }
 
@@ -151,7 +121,7 @@ func (s *Service) DeleteTag(id uint) *Error {
 		return Err(http.StatusBadRequest, "请先删除其子版块。")
 	}
 	var used int64
-	s.db.Model(&models.Discussion{}).Joins("JOIN flarum_discussion_tag dt ON dt.discussion_id = flarum_discussions.id").
+	s.db.Model(&models.Discussion{}).Joins("JOIN "+models.TableDiscussionTag+" dt ON dt.discussion_id = flarum_discussions.id").
 		Where("dt.tag_id = ?", id).Count(&used)
 	if used > 0 {
 		return Err(http.StatusBadRequest, "该版块下仍有讨论，无法删除。")
@@ -159,8 +129,6 @@ func (s *Service) DeleteTag(id uint) *Error {
 	if err := s.db.Delete(&t).Error; err != nil {
 		return Err(http.StatusInternalServerError, "删除版块失败。")
 	}
-	// 版块行已删除，显式失效 tag:perms:all（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.TagPermsKey())
 	return nil
 }
 
@@ -249,9 +217,6 @@ func (s *Service) banUser(_, u *models.User, _ []uint) *Error {
 	if err := s.db.Where("user_id = ?", u.ID).Delete(&models.AccessToken{}).Error; err != nil {
 		return Err(http.StatusInternalServerError, "操作失败，请重试。")
 	}
-	// 用户资料与全部会话均已变更（token 行被删），显式失效 user:id 与全会话缓存。
-	cache.Default.Delete(cache.UserIDKey(u.ID))
-	cache.Default.DeletePrefix(cache.SessionsPrefix())
 	return nil
 }
 
@@ -260,8 +225,6 @@ func (s *Service) unbanUser(_, u *models.User, _ []uint) *Error {
 	if err := s.db.Model(u).Updates(map[string]any{"suspended_until": nil}).Error; err != nil {
 		return Err(http.StatusInternalServerError, "操作失败，请重试。")
 	}
-	// 用户资料已变更，显式失效 user:id（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.UserIDKey(u.ID))
 	return nil
 }
 
@@ -289,8 +252,6 @@ func (s *Service) setUserGroups(viewer, u *models.User, groupIDs []uint) *Error 
 	if err != nil {
 		return Err(http.StatusInternalServerError, "保存失败。")
 	}
-	// 用户组已变更，显式失效 user:id（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.UserIDKey(u.ID))
 	return nil
 }
 
@@ -357,15 +318,17 @@ func (s *Service) AdminRestore(id uint) error {
 	return s.db.Model(&models.Discussion{}).Where("id = ?", id).Update("hidden_at", nil).Error
 }
 
-// SettingsInput 站点设置保存请求。
-type SettingsInput struct {
-	SiteName     string `json:"siteName"`
-	Registration string `json:"registration"`
-	WelcomeText  string `json:"welcomeText"`
+// AdminSettings 返回站点设置视图。
+func (s *Service) AdminSettings() models.SettingsInput {
+	return models.SettingsInput{
+		SiteName:     s.SettingValue(models.SettingKeySiteName),
+		Registration: s.SettingValue(models.SettingKeyRegistration),
+		WelcomeText:  s.SettingValue(models.SettingKeyWelcomeText),
+	}
 }
 
-// SaveSettings 保存站点设置并失效对应缓存。
-func (s *Service) SaveSettings(in SettingsInput) *Error {
+// SaveSettings 保存站点设置。
+func (s *Service) SaveSettings(in models.SettingsInput) *Error {
 	registration := in.Registration
 	if registration != "open" && registration != "invite" {
 		registration = "invite"
@@ -380,9 +343,22 @@ func (s *Service) SaveSettings(in SettingsInput) *Error {
 			return Err(http.StatusInternalServerError, "保存失败，请重试。")
 		}
 	}
-	// 设置行已变更，显式失效对应 setting:{key} 缓存（Cache-Aside 写路径）。
-	cache.Default.Delete(cache.SettingKey(models.SettingKeySiteName))
-	cache.Default.Delete(cache.SettingKey(models.SettingKeyRegistration))
-	cache.Default.Delete(cache.SettingKey(models.SettingKeyWelcomeText))
 	return nil
+}
+
+// SettingValue 读取 flarum_settings（与 PHP 共享；forum_title 即站点名）。
+func (s *Service) SettingValue(key string) string {
+	var st models.Setting
+	value := ""
+	if err := s.db.Where("`key` = ?", key).First(&st).Error; err == nil && st.Value != "" {
+		value = st.Value
+	} else {
+		switch key {
+		case models.SettingKeySiteName:
+			value = s.cfg.SiteName
+		case models.SettingKeyRegistration:
+			value = s.cfg.Registration
+		}
+	}
+	return value
 }

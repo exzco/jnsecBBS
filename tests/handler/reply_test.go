@@ -14,6 +14,7 @@ import (
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/handler"
 	"github.com/exzco/bbs/internal/infra/db"
+	"github.com/exzco/bbs/internal/middleware"
 	"github.com/exzco/bbs/internal/models"
 	"github.com/exzco/bbs/internal/service"
 	"github.com/exzco/bbs/tests/testdb"
@@ -210,15 +211,15 @@ func TestReplyConcurrentMySQL(t *testing.T) {
 	}
 	d := seedReplyDiscussion(t, g, user, []int{100}, 100)
 	router := echo.New()
-	resetCache()
 	router.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error { c.Set("user", user); return next(c) }
 	})
-	s := handler.New(&config.Config{}, g)
+	appCfg := &config.Config{}
+	s := handler.New(appCfg, g)
 	// Use the production routes with a dedicated IP so other tests do not consume
 	// this test's rate-limit allowance; all 20 workers fit within its burst.
 	router.IPExtractor = func(*http.Request) string { return "198.51.100.2" }
-	s.Register(router)
+	middleware.Register(router, appCfg, g, s)
 
 	// Force every request to preload the same stale discussion before any starts
 	// its transaction. A single connection or sequential requests hide this bug.

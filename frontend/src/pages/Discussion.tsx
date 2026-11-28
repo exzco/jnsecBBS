@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router"
 import {
-  ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronLeft, Eye, Flag, Heart, Loader2, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
+  ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronLeft, Eye, Heart, Loader2, Lock, Pencil, Pin, Quote, Reply, Tag as TagIcon, Trash2, Users,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useSession } from "@/lib/session"
@@ -721,14 +721,6 @@ function DiscussionView({
     return () => scroller.removeEventListener("scroll", onScroll)
   }, [isFromStart, startPage, startTotalPages, isLoadingMore, isLoadingStart, id])
 
-  const handlePostHidden = (postId: number, hidden: boolean) => {
-    if (isFromStart) {
-      setStartPosts((prev) => prev.map((item) => (item.id === postId ? { ...item, hidden } : item)))
-    } else {
-      setRecentPosts((prev) => prev.map((item) => (item.id === postId ? { ...item, hidden } : item)))
-    }
-  }
-
   const handlePostLiked = (postId: number, liked: boolean, likeCount: number, likers?: User[]) => {
     if (isFromStart) {
       setStartPosts((prev) =>
@@ -748,6 +740,22 @@ function DiscussionView({
       void qc.invalidateQueries({ queryKey: ["discussion", id] })
       void qc.invalidateQueries({ queryKey: ["tagDiscussions"] })
       void qc.invalidateQueries({ queryKey: ["home"] })
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
+  const delDiscussion = useMutation({
+    mutationFn: () => api(`/api/discussions/${id}/delete`, { method: "POST" }),
+    onSuccess: () => {
+      toast.success("帖子已删除")
+      void qc.invalidateQueries({ queryKey: ["home"] })
+      void qc.invalidateQueries({ queryKey: ["recent"] })
+      void qc.invalidateQueries({ queryKey: ["tagDiscussions"] })
+      if (onBack) {
+        onBack()
+      } else {
+        navigate("/")
+      }
     },
     onError: (e) => toast.error((e as Error).message),
   })
@@ -872,6 +880,23 @@ function DiscussionView({
                 <Pencil className="size-3.5" />
               </Button>
             )}
+            {!data.isMod && data.canDelete && (
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={delDiscussion.isPending}
+                className="size-7 shrink-0 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors cursor-pointer"
+                title="删除帖子"
+                aria-label="删除帖子"
+                onClick={() => {
+                  if (confirm("确定永久删除该帖子及其所有回复？删除后无法恢复。")) {
+                    delDiscussion.mutate()
+                  }
+                }}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            )}
           </div>
         )}
         <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -925,7 +950,6 @@ function DiscussionView({
             p={p}
             canReply={data.canReply}
             onReplyTo={handleReplyTo}
-            onHiddenChange={handlePostHidden}
             onLikedChange={handlePostLiked}
           />
         ))}
@@ -1152,13 +1176,11 @@ function PostItem({
   p,
   canReply,
   onReplyTo,
-  onHiddenChange,
   onLikedChange,
 }: {
   p: Post
   canReply?: boolean
   onReplyTo?: (p: Post, quoteText?: string, quoteWholePost?: boolean) => void
-  onHiddenChange?: (postId: number, hidden: boolean) => void
   onLikedChange?: (postId: number, liked: boolean, likeCount: number, likers?: User[]) => void
 }) {
   const { data: session } = useSession()
@@ -1245,15 +1267,6 @@ function PostItem({
       void qc.invalidateQueries({ queryKey: ["discussion"] })
     },
   })
-  const hide = useMutation({
-    mutationFn: () => api<{ hidden: boolean }>(`/api/posts/${p.id}/hide`, { method: "POST" }),
-    onSuccess: (res) => {
-      onHiddenChange?.(p.id, res.hidden)
-      void qc.invalidateQueries({ queryKey: ["discussion"] })
-    },
-    onError: (e) => toast.error((e as Error).message),
-  })
-
   const likers = p.likers || []
   const totalLikes = Math.max(p.likeCount || 0, likers.length)
   const shownLikers = likers.slice(0, 8)
@@ -1265,7 +1278,7 @@ function PostItem({
       data-post-id={p.id}
       data-post-number={p.number}
       data-post-author={p.author?.username ?? ""}
-      className={`scroll-mt-24 border-b border-border/50 px-1 py-5 last:border-b-0 ${p.hidden ? "opacity-60" : ""}`}
+      className="scroll-mt-24 border-b border-border/50 px-1 py-5 last:border-b-0"
     >
       <header className="mb-2 flex items-center gap-2.5">
         <Link to={`/u/${p.author?.username ?? ""}`}>
@@ -1286,8 +1299,6 @@ function PostItem({
 
       {editing && p.canEdit ? (
         <PostEditor post={p} onClose={closeEditor} />
-      ) : p.hidden ? (
-        <p className="text-sm text-muted-foreground">该回复已被隐藏。</p>
       ) : (
         <div data-post-body>
           <MarkdownBody content={p.content} html={p.html} />
@@ -1318,19 +1329,6 @@ function PostItem({
         {p.canEdit && !editing && (
           <button type="button" onClick={() => setEditing(true)} className="inline-flex items-center gap-1 text-muted-foreground hover:text-primary">
             <Pencil className="size-3.5" /> 编辑
-          </button>
-        )}
-        {p.canHide && (
-          <button
-            className="inline-flex items-center gap-1 text-muted-foreground hover:text-red-600 cursor-pointer"
-            onClick={() => {
-              const actionName = p.hidden ? "恢复" : "隐藏"
-              if (window.confirm(`确定${actionName}该帖子内容？`)) {
-                hide.mutate()
-              }
-            }}
-          >
-            <Flag className="size-3.5" /> {p.hidden ? "恢复" : "隐藏"}
           </button>
         )}
         <div className="inline-flex items-center gap-1.5">

@@ -1,6 +1,12 @@
 package models
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+)
 
 // 字段类型按生产库 information_schema 实测对齐（2026-10 采集）。
 
@@ -55,6 +61,28 @@ func (u *User) IsAdmin() bool       { return u.HasGroup(GroupAdmin) }
 func (u *User) IsModerator() bool   { return u.HasGroup(GroupAdmin, GroupMod) }
 func (u *User) DisplayName() string { return u.Username }
 
+const passwordHashCost = 12
+
+// CheckPassword 校验密码。兼容从 Flarum 导入的 PHP bcrypt 哈希：
+// PHP password_hash 产出 "$2y$" 前缀，Go 的 bcrypt 只认 "$2a$/2b$"，这里做前缀归一。
+func (u *User) CheckPassword(plain string) bool {
+	hash := strings.TrimSpace(u.Password)
+	if strings.HasPrefix(hash, "$2y$") {
+		hash = "$2a$" + hash[4:]
+	}
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(plain)) == nil
+}
+
+// SetPassword 使用 bcrypt 对明文密码哈希并写入 User.Password。
+func (u *User) SetPassword(plain string) error {
+	h, err := bcrypt.GenerateFromPassword([]byte(plain), passwordHashCost)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+	u.Password = string(h)
+	return nil
+}
+
 // JoinedAtOrZero 供 DTO 使用：可空时间零值兜底。
 func (u *User) JoinedAtOrZero() time.Time {
 	if u.JoinedAt != nil {
@@ -85,3 +113,55 @@ type Group struct {
 func (g *Group) Name() string { return g.NamePlural }
 
 func (Group) TableName() string { return "flarum_groups" }
+
+// LoginInput 登录请求。
+type LoginInput struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// RegisterInput 注册请求。
+type RegisterInput struct {
+	Username        string `json:"username"`
+	Email           string `json:"email"`
+	Password        string `json:"password"`
+	PasswordConfirm string `json:"passwordConfirm"`
+	Invite          string `json:"invite"`
+	CaptchaID       string `json:"captchaId"`
+	CaptchaValue    string `json:"captchaValue"`
+}
+
+// ProfileInput 个人资料修改请求（nil 表示不修改该字段）。
+type ProfileInput struct {
+	Bio      string  `json:"bio"`
+	RealName *string `json:"realName"`
+	BlogURL  *string `json:"blogUrl"`
+}
+
+// EmailInput 换绑邮箱请求。
+type EmailInput struct {
+	Email string `json:"email"`
+}
+
+// PasswordInput 修改密码请求。
+type PasswordInput struct {
+	Current string `json:"current"`
+	New     string `json:"new"`
+	Confirm string `json:"confirm"`
+}
+
+// AdminUserInput 后台用户操作请求。
+type AdminUserInput struct {
+	Action string `json:"action"`
+	Groups []uint `json:"groups"`
+}
+
+const TableGroupUser = "flarum_group_user"
+
+// GroupUser 映射用户与用户组的关联表 flarum_group_user。
+type GroupUser struct {
+	UserID  uint `gorm:"column:user_id;primaryKey"`
+	GroupID uint `gorm:"column:group_id;primaryKey"`
+}
+
+func (GroupUser) TableName() string { return TableGroupUser }

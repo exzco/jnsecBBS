@@ -4,17 +4,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/exzco/bbs/internal/content"
+	"github.com/exzco/bbs/internal/models"
+	"github.com/exzco/bbs/internal/util"
 )
 
 func TestLegacyMarkdownRendering(t *testing.T) {
-	source := content.DecodeContent(`<r><p><STRONG><s>**</s>加粗<e>**</e></STRONG></p></r>`)
-	rendered, _ := content.Render(source, nil)
+	p := models.Post{Type: "comment", Content: `<r><p><STRONG><s>**</s>加粗<e>**</e></STRONG></p></r>`}
+	rendered, _ := util.Render(p.Markdown(), nil)
 	if !strings.Contains(rendered, "<strong>加粗</strong>") {
 		t.Fatalf("lost formatting: %s", rendered)
 	}
-	for _, source := range []string{`<script>alert(1)</script>`, `[x](javascript:alert%281%29)`, content.DecodeContent(`<t>&lt;img src=x onerror=alert(1)&gt;</t>`)} {
-		rendered, _ := content.Render(source, nil)
+	xssPost := models.Post{Type: "comment", Content: `<t>&lt;img src=x onerror=alert(1)&gt;</t>`}
+	for _, source := range []string{`<script>alert(1)</script>`, `[x](javascript:alert%281%29)`, xssPost.Markdown()} {
+		rendered, _ := util.Render(source, nil)
 		if strings.Contains(rendered, "<script") || strings.Contains(rendered, "javascript:") || strings.Contains(rendered, "<img src=x") {
 			t.Fatalf("unsafe output: %s", rendered)
 		}
@@ -23,25 +25,25 @@ func TestLegacyMarkdownRendering(t *testing.T) {
 
 func TestUplTagsAndMentions(t *testing.T) {
 	imgSource := `[upl-image-preview url=https://bbs.jnsec.org/assets/files/2022-04-08/1649409498-739055-image.png]`
-	html, _ := content.Render(imgSource, nil)
+	html, _ := util.Render(imgSource, nil)
 	if !strings.Contains(html, `<img src="https://bbs.jnsec.org/assets/files/2022-04-08/1649409498-739055-image.png"`) {
 		t.Fatalf("failed to render upl-image-preview as img: %s", html)
 	}
 
 	fileSource := `[upl-file uuid=9393e74e-f7a4-46fc-93b0-1721c6ac6cfd size=712kB]malloc.pdf[/upl-file]`
-	html, _ = content.Render(fileSource, nil)
+	html, _ = util.Render(fileSource, nil)
 	if !strings.Contains(html, `/api/fof/download/9393e74e-f7a4-46fc-93b0-1721c6ac6cfd`) || !strings.Contains(html, `malloc.pdf`) {
 		t.Fatalf("failed to render upl-file download link: %s", html)
 	}
 
 	mentionSource := `@"moyue"#p14553 关注一下`
-	html, _ = content.Render(mentionSource, nil)
+	html, _ = util.Render(mentionSource, nil)
 	if !strings.Contains(html, `<a href="#post-14553"`) || !strings.Contains(html, `@moyue #14553`) {
 		t.Fatalf("failed to render post mention link: %s", html)
 	}
 
 	mentionWithSpace := `@admin #42 支持空格楼层引用`
-	html, _ = content.Render(mentionWithSpace, nil)
+	html, _ = util.Render(mentionWithSpace, nil)
 	if !strings.Contains(html, `<a href="#post-42"`) || !strings.Contains(html, `@admin #42`) {
 		t.Fatalf("failed to render post mention with space: %s", html)
 	}
@@ -52,7 +54,7 @@ func TestUplTagsAndMentions(t *testing.T) {
 		}
 		return 0, false
 	}
-	extracted := content.MentionedUsernames(`> @"moyue"#p14553 关注一下
+	extracted := util.MentionedUsernames(`> @"moyue"#p14553 关注一下
 @admin 还有 @alice 以及 @nonexistent`, dummyResolver)
 	expected := map[string]bool{"moyue": true, "admin": true, "alice": true}
 	if len(extracted) != 3 {

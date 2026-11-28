@@ -62,9 +62,7 @@ export interface Post {
   likers?: User[]
   createdAt: string
   editedAt: string | null
-  hidden: boolean
   canEdit: boolean
-  canHide: boolean
   discussion: { id: number; slug: string }
 }
 
@@ -120,6 +118,7 @@ export interface DiscussionDetail {
   posts: Post[]
   page: Page
   canReply: boolean
+  canDelete?: boolean
   isMod: boolean
   editorTags: Tag[]
   viewers?: DiscussionViewer[]
@@ -160,8 +159,6 @@ export interface PostForm {
 
 export interface AdminTagNode {
   tag: Tag
-  viewIds: number[]
-  postIds: number[]
   children: AdminTagNode[]
 }
 

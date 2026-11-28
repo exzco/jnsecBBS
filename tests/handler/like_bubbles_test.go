@@ -11,6 +11,7 @@ import (
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/handler"
 	"github.com/exzco/bbs/internal/infra/db"
+	"github.com/exzco/bbs/internal/middleware"
 	"github.com/exzco/bbs/internal/models"
 	"github.com/exzco/bbs/internal/service"
 	"github.com/exzco/bbs/tests/testdb"
@@ -212,8 +213,8 @@ func TestPostLikeUnauthorized(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := echo.New()
-	resetCache()
-	handler.New(&config.Config{}, g).Register(router)
+	cfg := &config.Config{}
+	middleware.Register(router, cfg, g, handler.New(cfg, g))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/posts/1/like", nil)
 	w := httptest.NewRecorder()

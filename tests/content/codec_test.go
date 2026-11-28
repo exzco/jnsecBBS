@@ -3,7 +3,7 @@ package content_test
 import (
 	"testing"
 
-	"github.com/exzco/bbs/internal/content"
+	"github.com/exzco/bbs/internal/models"
 )
 
 func TestDecodeContent(t *testing.T) {
@@ -20,7 +20,8 @@ func TestDecodeContent(t *testing.T) {
 		{"standalone br", `<r><p>第一行<br/>第二行</p></r>`, "第一行\n第二行"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := content.DecodeContent(tc.stored); got != tc.source {
+			p := models.Post{Type: "comment", Content: tc.stored}
+			if got := p.Markdown(); got != tc.source {
 				t.Fatalf("got %q, want %q", got, tc.source)
 			}
 		})
@@ -29,7 +30,9 @@ func TestDecodeContent(t *testing.T) {
 
 func TestContentRoundTrip(t *testing.T) {
 	for _, source := range []string{"", "# 中文\n\n**bold** & <tag> \"quotes\"", "```go\nfmt.Println(1)\n```", "a\r\nb\t🙂"} {
-		if got := content.DecodeContent(content.EncodeContent(source)); got != source {
+		p := models.Post{Type: "comment"}
+		p.SetMarkdown(source)
+		if got := p.Markdown(); got != source {
 			t.Fatalf("got %q, want %q", got, source)
 		}
 	}

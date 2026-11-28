@@ -50,7 +50,7 @@ func TestActivityCountsDiscussionsAndRepliesOnceAtCSTBoundaries(t *testing.T) {
 	createPost(legacy, "2024-03-04T16:00:00Z", 1) // no first_post_id: number 1 is the fallback
 	createPost(legacy, "2024-03-04T16:00:00Z", 2)
 
-	// Activity must apply the same privacy and moderation boundaries as content.
+	// 旧数据的私密、隐藏和审核状态不再影响统计；系统事件仍不计入回复。
 	for _, attrs := range []map[string]any{
 		{"is_private": true},
 		{"hidden_at": time.Now()},
@@ -99,10 +99,10 @@ func TestActivityCountsDiscussionsAndRepliesOnceAtCSTBoundaries(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Year != 2024 || response.Total != 5 || len(response.Days) != 366 {
+	if response.Year != 2024 || response.Total != 16 || len(response.Days) != 366 {
 		t.Fatalf("unexpected year, total or leap-year day count: %+v", response)
 	}
-	want := map[string]int{"2024-01-01": 1, "2024-01-02": 1, "2024-03-05": 2, "2024-12-31": 1}
+	want := map[string]int{"2024-01-01": 1, "2024-01-02": 1, "2024-03-05": 13, "2024-12-31": 1}
 	for _, day := range response.Days {
 		if day.Count != want[day.Date] {
 			t.Errorf("%s: got %d want %d", day.Date, day.Count, want[day.Date])

@@ -38,15 +38,18 @@ func (s *Service) SaveUpload(u *models.User, filename, contentType string, size 
 	if size > 25<<20 {
 		return UploadResult{}, Err(http.StatusBadRequest, "文件大小不能超过 25MB。")
 	}
+
 	ext := strings.ToLower(filepath.Ext(filename))
 	if blockedExts[ext] {
-		return UploadResult{}, Err(http.StatusBadRequest, "出于安全原因，禁止上传可执行或脚本文件。")
+		return UploadResult{}, Err(http.StatusBadRequest, "禁止上传敏感文件。")
 	}
+
 	dateDir := time.Now().Format("2006-01-02")
 	destDir := filepath.Join(s.cfg.DataDir, "assets", "files", dateDir)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return UploadResult{}, Err(http.StatusInternalServerError, "创建存储目录失败。")
 	}
+
 	hexPart, _ := randHex(6)
 	savedName := fmt.Sprintf("%d-%s%s", time.Now().Unix(), hexPart, ext)
 	f, err := os.Create(filepath.Join(destDir, savedName))

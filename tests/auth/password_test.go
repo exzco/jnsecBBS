@@ -3,18 +3,18 @@ package auth_test
 import (
 	"testing"
 
-	"github.com/exzco/bbs/internal/auth"
+	"github.com/exzco/bbs/internal/models"
 )
 
 func TestCheckPasswordGoHash(t *testing.T) {
-	h, err := auth.HashPassword("s3cret-password")
-	if err != nil {
+	var u models.User
+	if err := u.SetPassword("s3cret-password"); err != nil {
 		t.Fatal(err)
 	}
-	if !auth.CheckPassword(h, "s3cret-password") {
+	if !u.CheckPassword("s3cret-password") {
 		t.Fatal("valid password rejected")
 	}
-	if auth.CheckPassword(h, "wrong") {
+	if u.CheckPassword("wrong") {
 		t.Fatal("wrong password accepted")
 	}
 }
@@ -22,12 +22,15 @@ func TestCheckPasswordGoHash(t *testing.T) {
 // TestCheckPasswordPHPHash 验证从 Flarum 导入的 PHP bcrypt 哈希（$2y$ 前缀）可直接登录。
 func TestCheckPasswordPHPHash(t *testing.T) {
 	// 先生成 $2a$ 哈希再替换为 PHP 的 $2y$ 前缀
-	h, _ := auth.HashPassword("secret123")
-	y := "$2y$" + h[4:]
-	if !auth.CheckPassword(y, "secret123") {
+	var u models.User
+	if err := u.SetPassword("secret123"); err != nil {
+		t.Fatal(err)
+	}
+	u.Password = "$2y$" + u.Password[4:]
+	if !u.CheckPassword("secret123") {
 		t.Fatal("$2y$ prefixed hash rejected")
 	}
-	if auth.CheckPassword(y, "wrong") {
+	if u.CheckPassword("wrong") {
 		t.Fatal("wrong password accepted for $2y$ hash")
 	}
 }

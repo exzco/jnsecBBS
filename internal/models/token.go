@@ -31,3 +31,9 @@ type InviteCode struct {
 }
 
 func (InviteCode) TableName() string { return "bbs_invite_codes" }
+
+// CreateInvitesInput 批量生成邀请码请求。
+type CreateInvitesInput struct {
+	Count       int `json:"count"`
+	ExpiresDays int `json:"expiresDays"`
+}

@@ -1,4 +1,4 @@
-// 邮件通知：outbox 行与业务事务同库落库（回复成功 ⇔ 邮件必进队列），
+// 邮件通知：outbox 行与业务事务同库落库（回复成功 ⇔ 邮件进队列），
 // 后台任务限量重试投递；SMTP 未启用时整条链路零开销（不排队、不启动协程）。
 package service
 
@@ -17,34 +17,15 @@ import (
 
 const maxEmailAttempts = 10
 
-// EmailOutbox 待发/已发邮件记录（bbs_email_outbox）。
-type EmailOutbox struct {
-	ID        uint       `gorm:"column:id;primaryKey"`
-	Recipient string     `gorm:"column:recipient"`
-	Subject   string     `gorm:"column:subject"`
-	Body      string     `gorm:"column:body"`
-	Attempts  int        `gorm:"column:attempts"`
-	SentAt    *time.Time `gorm:"column:sent_at"`
-	LastError *string    `gorm:"column:last_error"`
-	CreatedAt time.Time  `gorm:"column:created_at"`
+func emailBound(g *gorm.DB, userID uint) bool {
+	var n int64
+	g.Model(&models.EmailBind{}).Where("user_id = ?", userID).Count(&n)
+	return n > 0
 }
-
-func (EmailOutbox) TableName() string { return "bbs_email_outbox" }
-
-// EmailBind 用户邮箱绑定记录（bbs_email_bind）：行存在 = 已绑定，回帖邮件通知仅发给已绑定用户。
-// 存量用户由迁移回填；新注册用户须在设置页显式绑定。
-type EmailBind struct {
-	UserID  uint      `gorm:"column:user_id;primaryKey"`
-	BoundAt time.Time `gorm:"column:bound_at"`
-}
-
-func (EmailBind) TableName() string { return "bbs_email_bind" }
 
 // EmailBound 用户是否已绑定邮箱。
 func (s *Service) EmailBound(userID uint) bool {
-	var n int64
-	s.db.Model(&EmailBind{}).Where("user_id = ?", userID).Count(&n)
-	return n > 0
+	return emailBound(s.db, userID)
 }
 
 // newMailSender 按配置构建 SMTP 客户端；host 或 from 留空即视为未启用邮件功能。
@@ -68,14 +49,14 @@ func (s *Service) enqueueEmail(tx *gorm.DB, to, subject, body string) error {
 	if s.mail == nil || to == "" {
 		return nil
 	}
-	return tx.Create(&EmailOutbox{Recipient: to, Subject: subject, Body: body, CreatedAt: time.Now()}).Error
+	return tx.Create(&models.EmailOutbox{Recipient: to, Subject: subject, Body: body, CreatedAt: time.Now()}).Error
 }
 
 // enqueueReplyEmail 给讨论楼主排一封回复通知邮件（含回复内容，超长截断）。
 // 未绑定邮箱的用户不发送。
 func (s *Service) enqueueReplyEmail(tx *gorm.DB, replier *models.User, d *models.Discussion, number int, content string) error {
 	to := d.User.Email
-	if to == "" || !s.EmailBound(d.User.ID) {
+	if to == "" || !emailBound(tx, d.User.ID) {
 		return nil
 	}
 	subject := fmt.Sprintf("[站内通知] %s 回复了你的讨论《%s》", replier.Username, d.Title)
@@ -115,7 +96,7 @@ func StartEmailOutbox(ctx context.Context, cfg *config.Config, g *gorm.DB, inter
 
 // deliverPending 投递一批待发邮件：成功落 sent_at，失败记 last_error 并限量重试。
 func (s *Service) deliverPending() {
-	var batch []EmailOutbox
+	var batch []models.EmailOutbox
 	if err := s.db.Where("sent_at IS NULL AND attempts < ?", maxEmailAttempts).
 		Order("id").Limit(20).Find(&batch).Error; err != nil {
 		log.Printf("[service] email outbox 轮询失败: %v", err)
@@ -135,7 +116,7 @@ func (s *Service) deliverPending() {
 			}
 			updates["last_error"] = msg
 		}
-		if err := s.db.Model(&EmailOutbox{}).Where("id = ?", out.ID).Updates(updates).Error; err != nil {
+		if err := s.db.Model(&models.EmailOutbox{}).Where("id = ?", out.ID).Updates(updates).Error; err != nil {
 			// 状态更新失败会使下轮重发同一封（at-least-once），不丢事件。
 			log.Printf("[service] email outbox 状态更新失败 id=%d: %v", out.ID, err)
 		}
