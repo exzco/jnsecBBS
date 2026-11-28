@@ -106,7 +106,7 @@ VPS 上通过 `./run.sh` 自动完成部署：
 
 ## 4. 如何提交 PR (Pull Request)
 
-仓库配置了 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)），所有 Push 到 `main` 与 PR 均会自动触发检验，注意 commit 需要备注 "cicd: xxxx"。
+仓库配置了 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)），需要触发自动部署时在 commit message 标题或正文备注中包含 `cicd`（不区分大小写）即可。
 
 ### 提交前本地检查清单
 1. **后端格式与检查**：
