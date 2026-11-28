@@ -86,5 +86,5 @@ func (s *Service) StartSession(u *models.User) (string, *UserDTO, int64, *Error)
 	if err := s.TouchSeen(u); err != nil {
 		return "", nil, 0, Err(http.StatusInternalServerError, "登录失败，请重试。")
 	}
-	return token, s.UserDTO(u), s.UnreadCount(u.ID), nil
+	return token, s.UserDTO(u), s.unreadCount(u), nil
 }

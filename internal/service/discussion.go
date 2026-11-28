@@ -39,6 +39,29 @@ func Paginate(total, page, perPage int) (pages int) {
 	return pages
 }
 
+// canViewHidden 仅管理员可查看已删除（hidden_at IS NOT NULL）的讨论。
+func canViewHidden(u *models.User) bool {
+	return u != nil && u.IsAdmin()
+}
+
+// visibleDiscussions 返回对当前用户可见的讨论查询（非管理员过滤已删除讨论）。
+func (s *Service) visibleDiscussions(u *models.User) *gorm.DB {
+	q := s.db.Model(&models.Discussion{})
+	if !canViewHidden(u) {
+		q = q.Where("flarum_discussions.hidden_at IS NULL")
+	}
+	return q
+}
+
+// visibleDiscussionPosts 返回归属讨论对当前用户可见的帖子查询（非管理员过滤已删除讨论下的帖子）。
+func (s *Service) visibleDiscussionPosts(u *models.User) *gorm.DB {
+	q := s.db.Model(&models.Post{})
+	if !canViewHidden(u) {
+		q = q.Where("EXISTS (SELECT 1 FROM flarum_discussions d WHERE d.id = flarum_posts.discussion_id AND d.hidden_at IS NULL)")
+	}
+	return q
+}
+
 // canDeleteDiscussion 仅讨论作者本人或版主可删除。
 func canDeleteDiscussion(u *models.User, d *models.Discussion) bool {
 	if u == nil {
@@ -170,14 +193,18 @@ func (s *Service) withReadState(discs []models.Discussion, u *models.User) []Dis
 }
 
 // tagDiscussionCounts 各版块讨论数（实时统计，Flarum tags 无可靠计数列）。
-func (s *Service) tagDiscussionCounts() map[uint]int {
+func (s *Service) tagDiscussionCounts(u *models.User) map[uint]int {
 	type row struct {
 		TagID uint
 		N     int
 	}
 	var rows []row
-	s.db.Model(&models.DiscussionTag{}).
-		Select("tag_id, COUNT(DISTINCT discussion_id) as n").
+	q := s.db.Model(&models.DiscussionTag{}).
+		Joins("JOIN flarum_discussions d ON d.id = " + models.TableDiscussionTag + ".discussion_id")
+	if !canViewHidden(u) {
+		q = q.Where("d.hidden_at IS NULL")
+	}
+	q.Select("tag_id, COUNT(DISTINCT discussion_id) as n").
 		Group("tag_id").Scan(&rows)
 	counts := make(map[uint]int, len(rows))
 	for _, r := range rows {
@@ -289,7 +316,7 @@ type HomeCard struct {
 func (s *Service) Home(u *models.User) []HomeCard {
 	var tags []models.Tag
 	s.db.Order("position ASC, id ASC").Find(&tags)
-	counts := s.tagDiscussionCounts()
+	counts := s.tagDiscussionCounts(u)
 	for i := range tags {
 		tags[i].DiscussionsCount = counts[tags[i].ID]
 	}
@@ -304,7 +331,7 @@ func (s *Service) Home(u *models.User) []HomeCard {
 			ids = append(ids, ch.ID)
 		}
 		var discs []models.Discussion
-		err := s.db.Model(&models.Discussion{}).Joins("JOIN "+models.TableDiscussionTag+" dt ON dt.discussion_id = flarum_discussions.id").
+		err := s.visibleDiscussions(u).Joins("JOIN "+models.TableDiscussionTag+" dt ON dt.discussion_id = flarum_discussions.id").
 			Where("dt.tag_id IN ?", ids).
 			Order("flarum_discussions.last_posted_at DESC, flarum_discussions.id DESC").
 			Preload("User").Preload("Tags").
@@ -347,7 +374,7 @@ func (s *Service) Recent(u *models.User, q RecentQuery) ListResult {
 			excluded = append(excluded, slug)
 		}
 	}
-	base := s.db.Model(&models.Discussion{})
+	base := s.visibleDiscussions(u)
 	if q.Sidebar {
 		base = base.Where(
 			"NOT EXISTS (SELECT 1 FROM " + models.TableDiscussionTag + " sdt JOIN flarum_tags st ON st.id = sdt.tag_id " +
@@ -458,14 +485,14 @@ func (s *Service) ListGroups() []GroupDTO {
 	return groupDTOs(groups)
 }
 
-func (s *Service) loadTag(slugParam string) (*models.Tag, []models.Tag, *Error) {
+func (s *Service) loadTag(u *models.User, slugParam string) (*models.Tag, []models.Tag, *Error) {
 	var tag models.Tag
 	if err := s.db.Where("slug = ?", slugParam).First(&tag).Error; err != nil {
 		return nil, nil, Err(http.StatusNotFound, "版块不存在或已被删除。")
 	}
 	var children []models.Tag
 	s.db.Where("parent_id = ?", tag.ID).Order("position ASC, id ASC").Find(&children)
-	counts := s.tagDiscussionCounts()
+	counts := s.tagDiscussionCounts(u)
 	tag.DiscussionsCount = counts[tag.ID]
 	for i := range children {
 		children[i].DiscussionsCount = counts[children[i].ID]
@@ -480,7 +507,7 @@ type TagDetailData struct {
 }
 
 func (s *Service) TagDetail(u *models.User, slugParam string) (TagDetailData, *Error) {
-	tag, children, err := s.loadTag(slugParam)
+	tag, children, err := s.loadTag(u, slugParam)
 	if err != nil {
 		return TagDetailData{}, err
 	}
@@ -494,7 +521,7 @@ func (s *Service) TagDetail(u *models.User, slugParam string) (TagDetailData, *E
 
 // TagDiscussions 版块内讨论列表（含子版块）。
 func (s *Service) TagDiscussions(u *models.User, slugParam string, page int, all bool) (ListResult, *Error) {
-	tag, children, err := s.loadTag(slugParam)
+	tag, children, err := s.loadTag(u, slugParam)
 	if err != nil {
 		return ListResult{}, err
 	}
@@ -502,7 +529,7 @@ func (s *Service) TagDiscussions(u *models.User, slugParam string, page int, all
 	for _, ch := range children {
 		ids = append(ids, ch.ID)
 	}
-	base := s.db.Model(&models.Discussion{}).Joins("JOIN "+models.TableDiscussionTag+" dt ON dt.discussion_id = flarum_discussions.id").
+	base := s.visibleDiscussions(u).Joins("JOIN "+models.TableDiscussionTag+" dt ON dt.discussion_id = flarum_discussions.id").
 		Where("dt.tag_id IN ?", ids)
 	var total int64
 	base.Session(&gorm.Session{}).Distinct("flarum_discussions.id").Count(&total)
@@ -581,7 +608,7 @@ func (s *Service) Profile(viewer *models.User, username string) (ProfileData, *E
 	if err := s.db.Preload("Groups").Where("lower(username) = lower(?)", username).First(&p).Error; err != nil {
 		return ProfileData{}, Err(http.StatusNotFound, "该用户不存在。")
 	}
-	dQuery := s.db.Model(&models.Discussion{}).Where("flarum_discussions.user_id = ?", p.ID)
+	dQuery := s.visibleDiscussions(viewer).Where("flarum_discussions.user_id = ?", p.ID)
 	var total int64
 	dQuery.Session(&gorm.Session{}).Count(&total)
 	var discs []models.Discussion
@@ -589,7 +616,7 @@ func (s *Service) Profile(viewer *models.User, username string) (ProfileData, *E
 		Order("flarum_discussions.last_posted_at DESC").Limit(10).Find(&discs)
 
 	var posts []models.Post
-	s.db.Model(&models.Post{}).Where("user_id = ? AND type = ?", p.ID, "comment").
+	s.visibleDiscussionPosts(viewer).Where("user_id = ? AND type = ?", p.ID, "comment").
 		Preload("Discussion").Preload("User").
 		Order("created_at DESC").Limit(10).Find(&posts)
 	rows := make([]ProfilePostRow, 0, len(posts))
@@ -630,11 +657,11 @@ func (s *Service) Search(viewer *models.User, q string) SearchData {
 	res.Found = true
 	like := "%" + q + "%"
 	var discs []models.Discussion
-	s.db.Model(&models.Discussion{}).Where("title LIKE ?", like).
+	s.visibleDiscussions(viewer).Where("title LIKE ?", like).
 		Preload("User").Preload("Tags").
 		Order("last_posted_at DESC").Limit(20).Find(&discs)
 	var posts []models.Post
-	s.db.Model(&models.Post{}).Where("content LIKE ? AND type = ?", like, "comment").
+	s.visibleDiscussionPosts(viewer).Where("content LIKE ? AND type = ?", like, "comment").
 		Preload("User").Preload("Discussion").
 		Order("created_at DESC").Limit(20).Find(&posts)
 	res.Discussions = s.Summaries(discs, viewer)
@@ -651,9 +678,12 @@ func (s *Service) Search(viewer *models.User, q string) SearchData {
 
 // ---------- 讨论详情 / 已读进度 ----------
 
-func (s *Service) loadDiscussion(id uint) (*models.Discussion, *Error) {
+func (s *Service) loadDiscussion(u *models.User, id uint) (*models.Discussion, *Error) {
 	var d models.Discussion
 	if err := s.db.Preload("User").Preload("Tags").First(&d, id).Error; err != nil {
+		return nil, Err(http.StatusNotFound, "该帖子不存在。")
+	}
+	if d.IsHidden() && !canViewHidden(u) {
 		return nil, Err(http.StatusNotFound, "该帖子不存在。")
 	}
 	return &d, nil
@@ -747,7 +777,7 @@ func saveReadPosition(g *gorm.DB, userID, discussionID, postID uint, postNumber 
 
 // SaveReadPosition 按账户保存用户在某讨论当前阅读停留的楼层。
 func (s *Service) SaveReadPosition(u *models.User, discussionID, postID uint, postNumber int) (ReadProgressDTO, *Error) {
-	d, err := s.loadDiscussion(discussionID)
+	d, err := s.loadDiscussion(u, discussionID)
 	if err != nil {
 		return ReadProgressDTO{}, err
 	}
@@ -785,7 +815,7 @@ func (s *Service) SaveReadPosition(u *models.User, discussionID, postID uint, po
 
 // DiscussionDetail 讨论详情：楼层分页、已读进度、浏览量与在线 viewers。
 func (s *Service) DiscussionDetail(u *models.User, id uint, q DetailQuery) (DetailData, *Error) {
-	d, err := s.loadDiscussion(id)
+	d, err := s.loadDiscussion(u, id)
 	if err != nil {
 		return DetailData{}, err
 	}
@@ -1114,7 +1144,7 @@ func (s *Service) Reply(u *models.User, discussionID uint, content string) (Repl
 	if strings.TrimSpace(content) == "" {
 		return ReplyResult{}, Err(http.StatusBadRequest, "回复内容不能为空。")
 	}
-	d, err := s.loadDiscussion(discussionID)
+	d, err := s.loadDiscussion(u, discussionID)
 	if err != nil {
 		return ReplyResult{}, err
 	}
@@ -1222,6 +1252,9 @@ func (s *Service) Moderate(u *models.User, id uint, action, title string, tagIDs
 	if err := s.db.First(&d, id).Error; err != nil {
 		return Err(http.StatusNotFound, "该帖子不存在。")
 	}
+	if d.IsHidden() && !canViewHidden(u) {
+		return Err(http.StatusNotFound, "该帖子不存在。")
+	}
 	isOwner := d.UserID != nil && *d.UserID == u.ID
 	isMod := u.IsModerator()
 	if !isMod && !isOwner {
@@ -1287,6 +1320,9 @@ func (s *Service) Moderate(u *models.User, id uint, action, title string, tagIDs
 func (s *Service) DeleteDiscussion(u *models.User, id uint) *Error {
 	var d models.Discussion
 	if err := s.db.Preload("Tags").First(&d, id).Error; err != nil {
+		return Err(http.StatusNotFound, "该帖子不存在。")
+	}
+	if d.IsHidden() && !canViewHidden(u) {
 		return Err(http.StatusNotFound, "该帖子不存在。")
 	}
 	if !canDeleteDiscussion(u, &d) {

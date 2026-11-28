@@ -18,14 +18,19 @@ func canEditPost(u *models.User, p *models.Post) bool {
 	return u.IsModerator() || (p.UserID != nil && *p.UserID == u.ID)
 }
 
-// loadPost 加载评论帖子。
-func (s *Service) loadPost(id uint) (*models.Post, *Error) {
+// loadPost 加载评论帖子（对非管理员过滤归属已删除讨论的帖子）。
+func (s *Service) loadPost(u *models.User, id uint) (*models.Post, *Error) {
 	var p models.Post
-	if err := s.db.First(&p, id).Error; err != nil {
+	if err := s.db.First(&p, id).Error; err != nil || p.Type != "comment" {
 		return nil, Err(http.StatusNotFound, "该帖子不存在。")
 	}
-	if p.Type != "comment" {
-		return nil, Err(http.StatusNotFound, "该帖子不存在。")
+	if !canViewHidden(u) {
+		var visible int64
+		if err := s.db.Model(&models.Discussion{}).
+			Where("id = ? AND hidden_at IS NULL", p.DiscussionID).
+			Count(&visible).Error; err != nil || visible == 0 {
+			return nil, Err(http.StatusNotFound, "该帖子不存在。")
+		}
 	}
 	return &p, nil
 }
@@ -47,7 +52,7 @@ type PostEditData struct {
 
 // PostEdit 编辑页：定位回复所在评论页（按评论位置而非楼层号）。
 func (s *Service) PostEdit(u *models.User, postID uint) (PostEditData, *Error) {
-	p, err := s.loadPost(postID)
+	p, err := s.loadPost(u, postID)
 	if err != nil {
 		return PostEditData{}, err
 	}
@@ -88,7 +93,7 @@ func (s *Service) EditPost(u *models.User, postID uint, content string) (time.Ti
 	if strings.TrimSpace(content) == "" {
 		return time.Time{}, Err(http.StatusBadRequest, "内容不能为空。")
 	}
-	p, err := s.loadPost(postID)
+	p, err := s.loadPost(u, postID)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -117,7 +122,7 @@ type LikeResult struct {
 
 // ToggleLike 切换当前用户对帖子的点赞。
 func (s *Service) ToggleLike(u *models.User, postID uint) (LikeResult, *Error) {
-	p, err := s.loadPost(postID)
+	p, err := s.loadPost(u, postID)
 	if err != nil {
 		return LikeResult{}, err
 	}

@@ -1,10 +1,13 @@
 package handler_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/exzco/bbs/internal/config"
 	"github.com/exzco/bbs/internal/handler"
@@ -209,5 +212,200 @@ func TestPostFormAndPostingWithoutChildTag(t *testing.T) {
 	}
 	if len(listResult.Items) == 0 || listResult.Items[0].ID != resOnlyParent.ID {
 		t.Fatalf("discussion not found in parent tag discussions: %+v", listResult.Items)
+	}
+}
+
+func TestHiddenWeeklyDiscussionsFilteredForNonAdmins(t *testing.T) {
+	g, err := db.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, _ := g.DB()
+	sqlDB.SetMaxOpenConns(1)
+	defer sqlDB.Close()
+	if err = testdb.InitializeEmpty(g); err != nil {
+		t.Fatal(err)
+	}
+
+	admin := models.User{Username: "admin", Email: "admin@example.org", Groups: []models.Group{{ID: models.GroupAdmin}}}
+	mod := models.User{Username: "mod", Email: "mod@example.org", Groups: []models.Group{{ID: models.GroupMod}}}
+	member := models.User{Username: "member", Email: "member@example.org", Groups: []models.Group{{ID: models.GroupMember}}}
+	for _, u := range []*models.User{&admin, &mod, &member} {
+		if err = g.Create(u).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	weekly := models.Tag{Name: "周报", Slug: "weekly"}
+	if err = g.Create(&weekly).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	older := now.Add(-time.Hour)
+	one := 1
+	visibleDisc := models.Discussion{
+		Title: "公开周报 26/4/24", UserID: &member.ID, IsApproved: true,
+		CommentCount: 1, LastPostedAt: &older, LastPostNumber: &one, Tags: []models.Tag{weekly},
+	}
+	hiddenDisc := models.Discussion{
+		Title: "罗谢慈 周报26/4/25", UserID: &member.ID, IsApproved: true,
+		CommentCount: 1, LastPostedAt: &now, LastPostNumber: &one, HiddenAt: &now, Tags: []models.Tag{weekly},
+	}
+	if err = g.Create(&visibleDisc).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = g.Create(&hiddenDisc).Error; err != nil {
+		t.Fatal(err)
+	}
+	visiblePost := models.Post{DiscussionID: visibleDisc.ID, Number: &one, UserID: &member.ID, Type: "comment", Content: "周报公开内容", IsApproved: true}
+	hiddenPost := models.Post{DiscussionID: hiddenDisc.ID, Number: &one, UserID: &member.ID, Type: "comment", Content: "周报已删除内容", IsApproved: true}
+	if err = g.Create(&visiblePost).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = g.Create(&hiddenPost).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = g.Create(&models.Notification{
+		UserID: member.ID, SenderID: admin.ID, Type: "reply",
+		DiscussionID: hiddenDisc.ID, PostID: hiddenPost.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	newRouter := func(u *models.User) *echo.Echo {
+		r := echo.New()
+		r.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+			return func(c echo.Context) error { c.Set("user", u); return next(c) }
+		})
+		cfg := &config.Config{}
+		middleware.Register(r, cfg, g, handler.New(cfg, g))
+		return r
+	}
+	doReq := func(r *echo.Echo, method, path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		var reader *strings.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		} else {
+			reader = strings.NewReader("")
+		}
+		req := httptest.NewRequest(method, path, reader)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	// 非管理员（普通成员与非管理员版主）完全看不到已删除周报
+	for _, viewer := range []*models.User{&member, &mod} {
+		r := newRouter(viewer)
+
+		// 1. 首页卡片统计与最新话题
+		w := doReq(r, "GET", "/api/home", "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s /api/home: %d %s", viewer.Username, w.Code, w.Body.String())
+		}
+		var homeRes struct {
+			Cards []struct {
+				Tag struct {
+					Slug             string `json:"slug"`
+					DiscussionsCount int    `json:"discussionsCount"`
+				} `json:"tag"`
+				Latest *struct {
+					ID uint `json:"id"`
+				} `json:"latest"`
+			} `json:"cards"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &homeRes); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range homeRes.Cards {
+			if c.Tag.Slug == "weekly" {
+				if c.Tag.DiscussionsCount != 1 || c.Latest == nil || c.Latest.ID != visibleDisc.ID {
+					t.Fatalf("%s home weekly card leaked hidden discussion: %+v", viewer.Username, c)
+				}
+			}
+		}
+
+		// 2. 全站最新、周报版块列表与版块详情
+		for _, path := range []string{"/api/recent", "/api/tags/weekly/discussions"} {
+			wList := doReq(r, "GET", path, "")
+			if wList.Code != http.StatusOK {
+				t.Fatalf("%s %s: %d %s", viewer.Username, path, wList.Code, wList.Body.String())
+			}
+			var listRes struct {
+				Items []struct {
+					ID uint `json:"id"`
+				} `json:"items"`
+				Page struct {
+					Total int `json:"total"`
+				} `json:"page"`
+			}
+			if err := json.Unmarshal(wList.Body.Bytes(), &listRes); err != nil {
+				t.Fatal(err)
+			}
+			if listRes.Page.Total != 1 || len(listRes.Items) != 1 || listRes.Items[0].ID != visibleDisc.ID {
+				t.Fatalf("%s %s leaked hidden discussion: %+v", viewer.Username, path, listRes)
+			}
+		}
+
+		wTag := doReq(r, "GET", "/api/tags/weekly", "")
+		if wTag.Code != http.StatusOK || !strings.Contains(wTag.Body.String(), `"discussionsCount":1`) {
+			t.Fatalf("%s /api/tags/weekly count mismatch: %d %s", viewer.Username, wTag.Code, wTag.Body.String())
+		}
+
+		// 3. 搜索与个人主页
+		wSearch := doReq(r, "GET", "/api/search?q=周报", "")
+		if strings.Contains(wSearch.Body.String(), hiddenDisc.Title) || strings.Contains(wSearch.Body.String(), hiddenPost.Content) {
+			t.Fatalf("%s /api/search leaked hidden discussion: %s", viewer.Username, wSearch.Body.String())
+		}
+		wProf := doReq(r, "GET", "/api/users/member", "")
+		if strings.Contains(wProf.Body.String(), hiddenDisc.Title) || strings.Contains(wProf.Body.String(), hiddenPost.Content) {
+			t.Fatalf("%s /api/users/member leaked hidden discussion: %s", viewer.Username, wProf.Body.String())
+		}
+
+		// 4. 详情、回复、阅读进度、点赞、编辑均返回 404
+		for _, tc := range []struct{ method, path, body string }{
+			{"GET", fmt.Sprintf("/api/discussions/%d", hiddenDisc.ID), ""},
+			{"POST", fmt.Sprintf("/api/discussions/%d/reply", hiddenDisc.ID), `{"content":"test"}`},
+			{"POST", fmt.Sprintf("/api/discussions/%d/read-progress", hiddenDisc.ID), fmt.Sprintf(`{"postId":%d,"postNumber":1}`, hiddenPost.ID)},
+			{"POST", fmt.Sprintf("/api/discussions/%d/mod", hiddenDisc.ID), `{"action":"edit_meta","title":"x"}`},
+			{"POST", fmt.Sprintf("/api/discussions/%d/delete", hiddenDisc.ID), ""},
+			{"GET", fmt.Sprintf("/api/posts/%d/edit", hiddenPost.ID), ""},
+			{"POST", fmt.Sprintf("/api/posts/%d/edit", hiddenPost.ID), `{"content":"x"}`},
+			{"POST", fmt.Sprintf("/api/posts/%d/like", hiddenPost.ID), ""},
+		} {
+			wAct := doReq(r, tc.method, tc.path, tc.body)
+			if wAct.Code != http.StatusNotFound {
+				t.Fatalf("%s %s %s: want 404, got %d (%s)", viewer.Username, tc.method, tc.path, wAct.Code, wAct.Body.String())
+			}
+		}
+
+		// 5. 通知不泄露已删除讨论
+		if viewer.ID == member.ID {
+			wNotif := doReq(r, "GET", "/api/me/notifications", "")
+			if strings.Contains(wNotif.Body.String(), hiddenDisc.Title) {
+				t.Fatalf("notifications leaked hidden discussion: %s", wNotif.Body.String())
+			}
+			wMe := doReq(r, "GET", "/api/me", "")
+			if !strings.Contains(wMe.Body.String(), `"unread":0`) {
+				t.Fatalf("expected unread=0 when only notification is on hidden discussion: %s", wMe.Body.String())
+			}
+		}
+	}
+
+	// 管理员仍可看到已删除周报及其详情（用于后台管理与恢复）
+	rAdmin := newRouter(&admin)
+	for _, path := range []string{"/api/recent", "/api/tags/weekly/discussions"} {
+		wList := doReq(rAdmin, "GET", path, "")
+		if wList.Code != http.StatusOK || !strings.Contains(wList.Body.String(), hiddenDisc.Title) {
+			t.Fatalf("admin %s missing hidden discussion: %d %s", path, wList.Code, wList.Body.String())
+		}
+	}
+	wDetail := doReq(rAdmin, "GET", fmt.Sprintf("/api/discussions/%d", hiddenDisc.ID), "")
+	if wDetail.Code != http.StatusOK || !strings.Contains(wDetail.Body.String(), `"isHidden":true`) {
+		t.Fatalf("admin detail failed for hidden discussion: %d %s", wDetail.Code, wDetail.Body.String())
 	}
 }

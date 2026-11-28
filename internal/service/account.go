@@ -43,6 +43,23 @@ func (s *Service) UnreadCount(userID uint) int64 {
 	return n
 }
 
+func (s *Service) visibleNotifications(u *models.User) *gorm.DB {
+	q := s.db.Model(&models.Notification{}).Where("user_id = ?", u.ID)
+	if !canViewHidden(u) {
+		q = q.Where("(discussion_id = 0 OR EXISTS (SELECT 1 FROM flarum_discussions d WHERE d.id = bbs_notifications.discussion_id AND d.hidden_at IS NULL))")
+	}
+	return q
+}
+
+func (s *Service) unreadCount(u *models.User) int64 {
+	if u == nil {
+		return 0
+	}
+	var n int64
+	s.visibleNotifications(u).Where("read_at IS NULL").Count(&n)
+	return n
+}
+
 // Me 组装当前会话的站点与用户数据（供 /api/me 使用）。
 func (s *Service) Me(u *models.User) map[string]any {
 	resp := map[string]any{
@@ -55,7 +72,7 @@ func (s *Service) Me(u *models.User) map[string]any {
 	if u != nil {
 		resp["email"] = u.Email
 		resp["emailBound"] = s.EmailBound(u.ID)
-		resp["unread"] = s.UnreadCount(u.ID)
+		resp["unread"] = s.unreadCount(u)
 		resp["realName"], resp["blogUrl"] = s.LoadUserProfileExtra(u.ID)
 	}
 	return resp
@@ -356,7 +373,7 @@ type NotificationDTO struct {
 // Notifications 当前用户最近 50 条通知与未读数。
 func (s *Service) Notifications(u *models.User) ([]NotificationDTO, int64) {
 	var notifs []models.Notification
-	s.db.Where("user_id = ?", u.ID).
+	s.visibleNotifications(u).
 		Preload("Sender").Preload("Discussion").
 		Order("created_at DESC").Limit(50).Find(&notifs)
 	items := make([]NotificationDTO, 0, len(notifs))
@@ -371,7 +388,7 @@ func (s *Service) Notifications(u *models.User) ([]NotificationDTO, int64) {
 		}
 		items = append(items, item)
 	}
-	return items, s.UnreadCount(u.ID)
+	return items, s.unreadCount(u)
 }
 
 // MarkNotificationsRead 全部通知标记已读。
